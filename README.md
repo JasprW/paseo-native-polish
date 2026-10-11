@@ -26,12 +26,6 @@ The desktop fallback is an approximation: Paseo's Electron window does not curre
 
 Streaming updates are coalesced by surface; wheel bursts rebase list snapshots after input settles. Text editing, selection and IME composition bypass global motion captures. Editor/terminal rendering does not trigger app layout scans. Motion and scans pause when the window loses focus or becomes hidden; returning rebases the current UI without replaying background changes. Tree commits reuse one bounded layout capture.
 
-## Experimental native context menus
-
-Version 0.4.9 adds a **Native workspace and file context menus** switch. It takes effect only in a macOS desktop host advertising native-menu bridge version 1. Standard Paseo 0.11.2 keeps its existing menus.
-
-The accompanying [desktop host patch](docs/experimental/native-context-menus.md) uses Electron's macOS menus and invokes the existing renderer actions. Labels and other interactive pages return to Paseo's web menu. This experiment does not add glass styling or change the window material.
-
 ## Install
 
 Requires **Paseo 0.11.2**, with plugins enabled on the target daemon. The declared range is `>=0.11.2 <0.12.0`; the DOM adapter is based on 0.11.2 and later patch versions have not been audited.

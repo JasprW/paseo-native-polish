@@ -47,7 +47,6 @@ declare const document: {
 };
 declare const window: {
   innerWidth: number; innerHeight: number;
-  paseoDesktop?: { platform?: string; menu?: { nativeContextMenuVersion?: number } };
   getComputedStyle(element: Element): Style;
   matchMedia(query: string): Media;
   requestAnimationFrame(callback: () => void): number;
@@ -60,12 +59,6 @@ declare const window: {
 };
 interface Mutation { type: string; target: Element; attributeName: string | null; addedNodes: ArrayLike<Element>; removedNodes: ArrayLike<Element> }
 declare const MutationObserver: new (callback: (records: Mutation[]) => void) => { observe(target: Element, options: { subtree: boolean; childList: boolean; attributes: boolean; attributeFilter: string[] }): void; disconnect(): void };
-
-export function hasNativeContextMenuHost(): boolean {
-  return Platform.OS === 'web' && typeof window !== 'undefined' &&
-    window.paseoDesktop?.platform === 'darwin' &&
-    window.paseoDesktop.menu?.nativeContextMenuVersion === 1;
-}
 
 const TOOL = '[data-testid="tool-call-badge"], [data-testid="tool-call-group"]';
 const FILE_TREE = '[data-testid="file-explorer-tree-scroll"]';
@@ -235,19 +228,19 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  document.body.setAttribute("data-native-polish", "0.4.9");
+  document.body.setAttribute("data-native-polish", "0.4.8");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
     const saved = JSON.parse(window.localStorage.getItem(PREF_KEY) ?? 'null');
     if (saved && typeof saved === 'object') {
       const next = { ...defaults };
-      for (const key of ['enabled', 'sidebars', 'trees', 'timeline', 'panes', 'tabs', 'overlays', 'controls', 'states', 'messages', 'elasticScroll', 'nativeMenus'] as const) if (typeof saved[key] === 'boolean') next[key] = saved[key];
+      for (const key of ['enabled', 'sidebars', 'trees', 'timeline', 'panes', 'tabs', 'overlays', 'controls', 'states', 'messages', 'elasticScroll'] as const) if (typeof saved[key] === 'boolean') next[key] = saved[key];
       if (saved.pace === 'quick') next.pace = 'quick';
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.9', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.8', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -481,7 +474,6 @@ export function installMotion(): () => void {
   document.head.appendChild(stylesheet);
   function updateMotionFlags() {
     const preferences = getPreferences();
-    document.body.setAttribute("data-native-polish-native-menus", String(preferences.nativeMenus && hasNativeContextMenuHost()));
     for (const key of ['controls', 'tabs', 'trees', 'states'] as const) document.body.setAttribute(`data-native-polish-${key}`, String(canAnimate() && preferences[key]));
     document.body.setAttribute('data-native-polish-motion', String(canAnimate()));
   }
@@ -1032,7 +1024,6 @@ export function installMotion(): () => void {
     disposed = true;
     elastic.dispose();
     document.body.removeAttribute("data-native-polish");
-    document.body.removeAttribute("data-native-polish-native-menus");
     for (const key of ['controls', 'tabs', 'trees', 'states', 'motion']) document.body.removeAttribute(`data-native-polish-${key}`);
     stylesheet.remove();
     for (const cleanup of decorations.values()) cleanup();

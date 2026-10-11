@@ -1,10 +1,10 @@
 import { useSyncExternalStore } from "react";
 export interface Preferences {
   enabled: boolean; sidebars: boolean; trees: boolean; timeline: boolean; panes: boolean;
-  tabs: boolean; overlays: boolean; controls: boolean; states: boolean; messages: boolean; elasticScroll: boolean; nativeMenus: boolean;
+  tabs: boolean; overlays: boolean; controls: boolean; states: boolean; messages: boolean; elasticScroll: boolean;
   pace: "gentle" | "quick";
 }
-export const defaults: Preferences = { enabled: true, sidebars: true, trees: true, timeline: true, panes: true, tabs: true, overlays: true, controls: true, states: true, messages: true, elasticScroll: true, nativeMenus: true, pace: "gentle" };
+export const defaults: Preferences = { enabled: true, sidebars: true, trees: true, timeline: true, panes: true, tabs: true, overlays: true, controls: true, states: true, messages: true, elasticScroll: true, pace: "gentle" };
 let current = defaults;
 const listeners = new Set<() => void>();
 export function getPreferences() { return current; }

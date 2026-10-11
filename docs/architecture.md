@@ -31,11 +31,3 @@ Preferences use a small reactive store and client-local storage. Reduce Motion i
 ## Compatibility
 
 The manifest limits the plugin to Paseo 0.11.x with a minimum of 0.11.2. The adapter was developed against 0.11.2. A compatible semver range does not establish that every host DOM revision has been reviewed. Inspect changed selectors and their retained/unmounted lifecycle before widening the range.
-
-## Experimental native menu host
-
-The plugin owns only the preference and the `data-native-polish-native-menus` marker. Its web adapter checks the macOS desktop bridge's `nativeContextMenuVersion === 1` before enabling the marker. The switch is independent of motion enablement and Reduce Motion; cleanup removes it. Standard hosts do not receive native menu IPC requests.
-
-The separate source patch adds a typed, bounded, primary-frame-only IPC bridge. Only item labels, opaque IDs, enabled/checked state and local coordinates cross IPC. Actions stay in the renderer. While an opted-in context menu opens, its existing root components mount in a hidden probe and register their actual actions in layout effects. The desktop host returns the selected ID, or null on cancellation. No DOM scraping or React internals are involved. Submenu/persistent actions return to the original menu surface and page state. Unsupported labels, descriptions, hints or input fields use the original surface. Unmount, navigation, window closure and a replacement request cancel pending native menus.
-
-The bundled source patch is a host experiment, not an installed-app patcher. See `experimental/native-context-menus.md` for build steps and limits.

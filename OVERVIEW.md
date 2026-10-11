@@ -11,5 +11,3 @@ Supported macOS/iOS browsers use the platform rebound. The desktop fallback foll
 Open Native Polish in the sidebar to enable or disable each category and choose a gentle 220 ms or quick 150 ms pace. Button and status feedback uses shorter transitions. New messages fade in once near the bottom of the conversation; streaming text and loaded history stay stable. System Reduce Motion turns off the added animations. Preferences are stored in this client's local storage.
 
 The client observes layout changes and briefly copies visible content locally for exit animations. Copies cannot receive input or accessibility focus and are removed after the transition. The plugin sends no content to a service and contributes no daemon backend.
-
-An experimental native context menu switch requires the accompanying macOS Native Menu Preview host. It applies to workspace and file right-click menus; standard Paseo keeps its existing menus. Custom interactive pages continue using Paseo’s interface.

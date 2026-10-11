@@ -1,6 +1,3 @@
 * text=auto eol=lf
 *.png binary
 *.gif binary
-
-# Preserve unified diff context lines in the host source patch.
-docs/experimental/*.patch -whitespace

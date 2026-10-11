@@ -1,11 +1,5 @@
 # Changelog
 
-## 0.4.9 · 2026-10-11
-
-- Add an optional native workspace/file context menu switch for the accompanying macOS desktop host experiment. Capability detection leaves standard Paseo menus unchanged.
-- Include a typed host patch using Electron Menu.popup, actual menu-component actions, disabled/checked states, cancellation cleanup and web fallback for interactive pages.
-- Keep native-menu enablement independent of animation pace and Reduce Motion. Remove its host marker on plugin unload.
-
 ## 0.4.8 · 2026-10-11
 
 - Restrict interaction snapshots to actionable controls and supported chrome shortcuts. Text selection, caret placement, ordinary editable Enter/Space, editor/terminal shortcuts and IME composition do not capture global layouts.
