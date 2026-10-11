@@ -24,7 +24,7 @@ Each motion category can be switched off. Choose **Gentle** (220 ms) or **Quick*
 
 The desktop fallback is an approximation: Paseo's Electron window does not currently enable `scrollBounce`, and a client plugin cannot change that main-process option. Exact macOS rebound requires host support.
 
-Streaming updates are coalesced by surface; wheel bursts rebase list snapshots after input settles.
+Streaming updates are coalesced by surface; wheel bursts rebase list snapshots after input settles. Text editing, selection and IME composition bypass global motion captures. Editor/terminal rendering does not trigger app layout scans. Motion and scans pause when the window loses focus or becomes hidden; returning rebases the current UI without replaying background changes. Tree commits reuse one bounded layout capture.
 
 ## Install
 

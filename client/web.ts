@@ -33,11 +33,13 @@ interface Element {
   animate(frames: Record<string, string | number>[], options: { duration: number; easing: string; fill?: string; delay?: number }): Animation;
   getAnimations?(): Animation[];
 }
-interface Event { target: Element | null; key?: string; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; repeat?: boolean; buttons?: number; clientX?: number; clientY?: number }
+interface Event { target: Element | null; key?: string; keyCode?: number; isComposing?: boolean; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; repeat?: boolean; button?: number; buttons?: number; clientX?: number; clientY?: number }
 type Listener = (event: Event) => void;
 interface Media { matches: boolean; addEventListener(type: string, callback: () => void): void; removeEventListener(type: string, callback: () => void): void }
 declare const document: {
   body: Element; head: Element;
+  hidden: boolean;
+  hasFocus(): boolean;
   querySelectorAll(selector: string): ArrayLike<Element>;
   createElement(tag: string): Element;
   addEventListener(type: string, callback: Listener, capture?: boolean): void;
@@ -97,6 +99,11 @@ const TAB_ROW = '[data-testid="workspace-tabs-scroll"]';
 const FLOATING = '[data-menu-surface="true"], [role="dialog"], [role="tooltip"]';
 const CHAT = '[data-testid="agent-chat-scroll"]';
 const HISTORY_ROW = '[data-history-row-id]';
+const EDITING = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[data-testid="file-source-editor"],.cm-editor,.monaco-editor,[data-testid="terminal-surface"],.xterm';
+// Some RN web Pressables omit a role. Keep the known interactive tree/sidebar
+// rows and pane actions eligible without capturing arbitrary content clicks.
+const ACTION = 'button,a,[role="button"],[role="link"],[role="menuitem"],[role="tab"],[role="treeitem"],[role="separator"],[data-testid="left-sidebar-resize-handle"],[tabindex="0"][aria-label],'
+  + PANE_ACTION + ',' + WORKSPACE_ANCHOR + ',' + FILE_ROW + ',' + CHANGE_ROW;
 const live = (selector: string) => all(document.body, selector).filter(el => !el.closest('[data-native-polish-ghost]') && visible(el));
 function firstBoxChild(el: Element): Element | null {
   const child = Array.from(el.children)[0];
@@ -212,14 +219,16 @@ function captureTree(target: Element): Tree | null {
     while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
     const key = JSON.stringify([...stack.map(item => item.name), name]);
     stack.push({ depth, name });
-    snapshots.push({ ...snapshot(row), key });
+    // Match the bounded tree animation budget; do not deep-copy an arbitrary
+    // number of visible rows on the input path.
+    if (snapshots.length < 120) snapshots.push({ ...snapshot(row), key });
   }
   return { element: tree, rows: snapshots };
 }
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  document.body.setAttribute("data-native-polish", "0.4.7");
+  document.body.setAttribute("data-native-polish", "0.4.8");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -231,7 +240,7 @@ export function installMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.7', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.8', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -241,11 +250,13 @@ export function installMotion(): () => void {
   let quietUntil = 0;
   let workspaceQuietUntil = 0;
   let pointerOrigin: { x: number; y: number } | null = null;
+  let suspended = document.hidden || !document.hasFocus();
+  let composing = false;
   const panelExits = new Set<Element>();
   const panelEntries = new Set<Element>();
   const active = new Map<Element, () => void>();
   const ghosts = new Set<Element>();
-  const canAnimate = () => !disposed && getPreferences().enabled && !reduceMotion.matches;
+  const canAnimate = () => !disposed && !suspended && getPreferences().enabled && !reduceMotion.matches;
   const duration = () => getPreferences().pace === 'quick' ? 150 : 220;
 
   const stopAll = () => {
@@ -384,8 +395,7 @@ export function installMotion(): () => void {
       }
     } else for (const detail of before.details) if (!detail.element.isConnected) ghost(detail);
   }
-  function animateTree(before: Tree, target: Element) {
-    const after = captureTree(target);
+  function animateTree(before: Tree, after: Tree | null) {
     if (!after || after.element !== before.element) return;
     const oldRows = new Map(before.rows.map(row => [row.key, row]));
     const nextKeys = new Set(after.rows.map(row => row.key));
@@ -774,6 +784,7 @@ export function installMotion(): () => void {
     }
   }
   function refreshAmbient(allow = canAnimate(), selected: ReadonlySet<Region> = new Set(regions)) {
+    if (disposed || suspended) return;
     if (selected.has('elastic')) elastic.refresh();
     allow = allow && !elastic.isActive();
     if (selected.has('controls')) decorateControls();
@@ -787,7 +798,7 @@ export function installMotion(): () => void {
     if (selected.has('messages')) updateMessages(allow);
   }
   function scheduleAmbient(selected: Region[] = regions) {
-    if (disposed) return;
+    if (disposed || suspended) return;
     for (const region of selected) dirty.add(region);
     if (passiveFrame) return;
     passiveFrame = window.requestAnimationFrame(() => {
@@ -838,13 +849,15 @@ export function installMotion(): () => void {
     // again in our observer would otherwise restart the same animation.
     const paneChanged = pending.paneMotion && preferences.panes && animatePanes(pending.panes, currentPanes);
     if (pending.disclosure && ((pending.disclosure.element.matches(TOOL) && preferences.timeline) || (!pending.disclosure.element.matches(TOOL) && preferences.sidebars))) animateDisclosure(pending.disclosure);
-    if (preferences.trees && pending.tree && treeTarget?.isConnected) animateTree(pending.tree, treeTarget);
+    // Capture the committed tree once, before applying its FLIP transforms.
+    // Reuse it as the next baseline instead of cloning/measuring it again.
+    const nextTree = pending.tree && treeTarget?.isConnected ? captureTree(treeTarget) : null;
+    if (preferences.trees && pending.tree && nextTree) animateTree(pending.tree, nextTree);
     // Refresh after a commit so asynchronous directory loads can animate once
     // without replaying previous rows. Ignore animation-generated ghost nodes.
     const disclosure = pending.disclosure;
     const nextChildren = disclosure ? Array.from(disclosure.element.children) : [];
     const disclosureChanged = disclosure && (nextChildren.length !== disclosure.children.length || nextChildren.some((child, index) => child !== disclosure.children[index]));
-    const nextTree = pending.tree && treeTarget?.isConnected ? captureTree(treeTarget) : null;
     pending = {
       panels: nextPanels,
       panes: pending.paneMotion ? currentPanes : pending.panes,
@@ -858,9 +871,13 @@ export function installMotion(): () => void {
   };
   const schedule = () => { if (pending && canAnimate() && !frame) frame = window.requestAnimationFrame(flush); };
   const observer = new MutationObserver(records => {
+    if (disposed || suspended) return;
     for (const record of records) {
       const target = elementOf(record.target);
       if (!target || target.closest('[data-native-polish-ghost]')) continue;
+      // Editors own their selection, composition and internal render loop.
+      // Caret/token/terminal updates never invalidate app motion baselines.
+      if (target.closest(EDITING)) continue;
       const structural = record.type === 'childList';
       if (structural) {
         const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
@@ -889,12 +906,29 @@ export function installMotion(): () => void {
     }
   });
   observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'class', 'aria-hidden', 'aria-expanded', 'aria-selected', 'aria-busy', 'data-status-bucket'] });
+  function clearCapture() {
+    pending = null; treeTarget = null; pointerOrigin = null; layoutPolling = 0;
+    window.clearTimeout(deadline); deadline = 0;
+    window.cancelAnimationFrame(frame); frame = 0;
+  }
+  function capturesInput(event: Event): boolean {
+    if (!canAnimate() || composing || event.isComposing || event.keyCode === 229 || event.key === 'Process' || event.repeat || (event.button ?? 0) !== 0) return false;
+    const target = elementOf(event.target);
+    if (!target || target.closest('[data-native-polish-ghost]')) return false;
+    const shortcut = Boolean(event.key && !event.altKey && (event.metaKey || event.ctrlKey)
+      && ['b', 'e', '.', '`'].includes(event.key.toLowerCase()));
+    if (event.key && !shortcut && !['Enter', ' '].includes(event.key)) return false;
+    // Preserve global sidebar shortcuts in the composer, but never treat
+    // editor/terminal shortcuts or ordinary text input as chrome activation.
+    if (target.closest(EDITING) && (!shortcut || target.closest('[data-testid="file-source-editor"],.cm-editor,.monaco-editor,[data-testid="terminal-surface"],.xterm'))) return false;
+    return shortcut || Boolean(target.closest(ACTION));
+  }
   const begin = (event: Event) => {
-    if (!canAnimate()) return;
-    if (event.key) {
-      if (event.repeat) return;
-      const shortcut = (event.metaKey || event.ctrlKey) && ['b', 'e', '.', '`'].includes(event.key.toLowerCase());
-      if (!shortcut && !['Enter', ' '].includes(event.key)) return;
+    if (!capturesInput(event)) {
+      // Selecting text or placing a caret may interrupt motion, but does not
+      // require full snapshots. Ordinary keystrokes leave host input alone.
+      if (!event.key) { clearCapture(); if (active.size || ghosts.size) stopAll(); }
+      return;
     }
     const target = elementOf(event.target);
     if (target?.closest('[data-native-polish-ghost]')) return;
@@ -904,6 +938,7 @@ export function installMotion(): () => void {
     // Finish interrupted motion before measuring the next layout. No delayed
     // input handlers: the host receives the original click/key immediately.
     stopAll();
+    window.cancelAnimationFrame(passiveFrame); passiveFrame = 0; dirty.clear();
     refreshAmbient(false);
     if (!event.key && event.clientX !== undefined && event.clientY !== undefined) pointerOrigin = { x: event.clientX, y: event.clientY };
     layoutPolling = 0;
@@ -914,6 +949,7 @@ export function installMotion(): () => void {
     schedule();
   };
   const onScroll: Listener = () => {
+    if (disposed || suspended) return;
     quietUntil = Date.now() + 350; pending = null; treeTarget = null;
     if (active.size || ghosts.size) stopAll();
     window.clearTimeout(scrollDeadline);
@@ -940,6 +976,7 @@ export function installMotion(): () => void {
   // Pointerdown establishes the old layout; click is only an AX fallback.
   const onCommit: Listener = (event) => {
     pointerOrigin = null;
+    if (!capturesInput(event)) return;
     if (Date.now() < quietUntil) { refreshAmbient(false); return; }
     if (!pending) begin(event);
     // Layout may change in a React commit after pointerup or click. Poll for a
@@ -948,6 +985,28 @@ export function installMotion(): () => void {
     layoutPolling = 12;
     schedule(); scheduleAmbient();
   };
+  const onCompositionStart: Listener = () => { composing = true; clearCapture(); if (active.size || ghosts.size) stopAll(); };
+  const onCompositionEnd: Listener = () => { composing = false; };
+  function pauseMotion() {
+    if (disposed) return;
+    suspended = true; composing = false; clearCapture();
+    window.clearTimeout(scrollDeadline); scrollDeadline = 0;
+    window.cancelAnimationFrame(passiveFrame); passiveFrame = 0; dirty.clear();
+    stopAll(); elastic.reset(); elastic.refresh(); updateMotionFlags();
+    // Exit copies are unnecessary while no motion is presented. Release
+    // their detached DOM and rebuild clean baselines on return.
+    workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); paneTransition = null;
+    fileIcons.clear(); toolIcons.clear(); toolStates.clear(); agentStates.clear();
+  }
+  function resumeMotion() {
+    if (disposed || document.hidden || !document.hasFocus()) return;
+    suspended = false; updateMotionFlags();
+    // Rebase once after host focus handling. Changes received in background
+    // appear immediately; they do not replay stale entrances or exits.
+    window.cancelAnimationFrame(passiveFrame); dirty.clear();
+    passiveFrame = window.requestAnimationFrame(() => { passiveFrame = 0; dirty.clear(); refreshAmbient(false); });
+  }
+  const onVisibility: Listener = () => { if (document.hidden) pauseMotion(); else resumeMotion(); };
   const onClick: Listener = onCommit;
   document.addEventListener('pointerdown', begin, true);
   document.addEventListener('pointerup', onCommit, true);
@@ -955,6 +1014,11 @@ export function installMotion(): () => void {
   document.addEventListener('click', onClick, true);
   document.addEventListener('keydown', begin, true);
   document.addEventListener('wheel', onScroll, true);
+  document.addEventListener('compositionstart', onCompositionStart, true);
+  document.addEventListener('compositionend', onCompositionEnd, true);
+  document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('blur', pauseMotion);
+  window.addEventListener('focus', resumeMotion);
   reduceMotion.addEventListener('change', onReduce);
   return () => {
     disposed = true;
@@ -971,6 +1035,11 @@ export function installMotion(): () => void {
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('keydown', begin, true);
     document.removeEventListener('wheel', onScroll, true);
+    document.removeEventListener('compositionstart', onCompositionStart, true);
+    document.removeEventListener('compositionend', onCompositionEnd, true);
+    document.removeEventListener('visibilitychange', onVisibility);
+    window.removeEventListener('blur', pauseMotion);
+    window.removeEventListener('focus', resumeMotion);
     reduceMotion.removeEventListener('change', onReduce);
     window.clearTimeout(deadline); window.cancelAnimationFrame(frame); window.cancelAnimationFrame(passiveFrame);
     window.clearTimeout(scrollDeadline); dirty.clear();

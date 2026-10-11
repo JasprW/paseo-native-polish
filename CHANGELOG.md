@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.8 · 2026-10-11
+
+- Restrict interaction snapshots to actionable controls and supported chrome shortcuts. Text selection, caret placement, ordinary editable Enter/Space, editor/terminal shortcuts and IME composition do not capture global layouts.
+- Ignore editor/terminal internal DOM updates in the ambient observer; preserve host-owned focus, selection and keyboard handling.
+- Pause scans and motion on window blur or document hiding. Cancel pending frames/timers, restore elastic styles and release detached baseline copies. Rebase once on return without replaying background changes.
+- Capture each committed file-tree layout once, reuse it before applying FLIP transforms, and cap deep-copied visible rows at 120.
+
 ## 0.4.7 · 2026-10-11
 
 - Allow deliberate same-direction pulls at an existing top/bottom boundary before the previous wheel tail has fully expired.
