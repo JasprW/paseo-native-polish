@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import { defaults, getPreferences, setPreferences, subscribePreferences } from "./preferences";
+import { installElasticScroll } from "./elastic-scroll";
 
 /* Desktop/Web adapter for Paseo 0.11.2. Host DOM is not a public plugin API.
  * Keep selectors here; native clients never touch these globals. No host events
@@ -218,19 +219,19 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  document.body.setAttribute("data-native-polish", "0.4.3");
+  document.body.setAttribute("data-native-polish", "0.4.4");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
     const saved = JSON.parse(window.localStorage.getItem(PREF_KEY) ?? 'null');
     if (saved && typeof saved === 'object') {
       const next = { ...defaults };
-      for (const key of ['enabled', 'sidebars', 'trees', 'timeline', 'panes', 'tabs', 'overlays', 'controls', 'states', 'messages'] as const) if (typeof saved[key] === 'boolean') next[key] = saved[key];
+      for (const key of ['enabled', 'sidebars', 'trees', 'timeline', 'panes', 'tabs', 'overlays', 'controls', 'states', 'messages', 'elasticScroll'] as const) if (typeof saved[key] === 'boolean') next[key] = saved[key];
       if (saved.pace === 'quick') next.pace = 'quick';
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.3', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.4', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -425,6 +426,11 @@ export function installMotion(): () => void {
   const tabSettling = new WeakMap<Element, number>();
   const chats = new WeakMap<Element, { seen: Set<string>; pending: Set<string>; running: boolean }>();
   const decorations = new Map<Element, () => void>();
+  const elastic = installElasticScroll({
+    enabled: () => canAnimate() && getPreferences().elasticScroll,
+    quick: () => getPreferences().pace === 'quick',
+    onRest: () => { quietUntil = Math.max(quietUntil, Date.now() + 350); scheduleAmbient(); },
+  });
   const stylesheet = document.createElement('style');
   stylesheet.setAttribute('data-native-polish-style', '');
   stylesheet.textContent = `
@@ -752,6 +758,8 @@ export function installMotion(): () => void {
     }
   }
   function refreshAmbient(allow = canAnimate()) {
+    elastic.refresh();
+    allow = allow && !elastic.isActive();
     decorateControls();
     updateWorkspaceRows(allow); updateTabs(allow); updateFloating(allow); updatePaneLayout(allow);
     updateStates(allow); updateMessages(allow);
@@ -890,6 +898,7 @@ export function installMotion(): () => void {
   reduceMotion.addEventListener('change', onReduce);
   return () => {
     disposed = true;
+    elastic.dispose();
     document.body.removeAttribute("data-native-polish");
     for (const key of ['controls', 'tabs', 'trees', 'states', 'motion']) document.body.removeAttribute(`data-native-polish-${key}`);
     stylesheet.remove();

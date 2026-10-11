@@ -4,6 +4,8 @@ Requires Paseo 0.11.2. The desktop and web adapter depends on that version's int
 
 Workspace rows fade in when created and fade out when archived. Pinning, unpinning and status-group changes move the existing row smoothly. Project creation/removal animates the group and neighboring rows moving into place. This uses the sidebar motion setting and works in project and status grouping.
 
+Elastic scrolling adds a small damped rebound at the top and bottom of agent conversations, workspace lists, Files and Changes. It has a separate switch and responds to vertical wheel/trackpad and single-finger web touch input. Normal scrolling, horizontal gestures, pinch zoom and nested code/detail scrollers keep their behavior. Native clients retain their existing scrolling.
+
 Open Native Polish in the sidebar to enable or disable each category and choose a gentle 220 ms or quick 150 ms pace. Button and status feedback uses shorter transitions. New messages fade in once near the bottom of the conversation; streaming text and loaded history stay stable. System Reduce Motion turns off the added animations. Preferences are stored in this client's local storage.
 
 The client observes layout changes and briefly copies visible content locally for exit animations. Copies cannot receive input or accessibility focus and are removed after the transition. The plugin sends no content to a service and contributes no daemon backend.

@@ -23,6 +23,7 @@ export function MotionSettings({ theme, layout }: PluginSurfaceProps) {
           <SettingsSwitch label="Buttons, hover and focus" value={values.controls} onValueChange={(controls) => setPreferences({ ...values, controls })} />
           <SettingsSwitch label="Loading and agent status changes" value={values.states} onValueChange={(states) => setPreferences({ ...values, states })} />
           <SettingsSwitch label="New messages" value={values.messages} onValueChange={(messages) => setPreferences({ ...values, messages })} />
+          <SettingsSwitch label="Elastic scrolling" value={values.elasticScroll} onValueChange={(elasticScroll) => setPreferences({ ...values, elasticScroll })} />
           <SettingsSelect label="Pace" value={values.pace} options={[{ label: "Gentle · 220 ms", value: "gentle" }, { label: "Quick · 150 ms", value: "quick" }]} onValueChange={(pace) => setPreferences({ ...values, pace: pace === "quick" ? "quick" : "gentle" })} />
         </SettingsCard>
       </SettingsSection>

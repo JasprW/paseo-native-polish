@@ -14,10 +14,13 @@ Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures tra
 | Explorer and timeline | Animate tree expansion/collapse, folder arrows, tool calls and thinking details. |
 | Overlays and controls | Short menu/dialog transitions, button press feedback and hover changes. |
 | Agent activity | Transition status changes and fade newly appended messages once near the conversation tail. |
+| Scrolling | Damped edge rebound for agent conversations, workspace lists, Files and Changes. Normal scrolling and inertia stay with Paseo. |
 
 Workspace rows also move smoothly when pinned, unpinned or moved between status groups. Project creation/removal animates the group and surrounding list. These transitions use the sidebar motion setting.
 
 Each motion category can be switched off. Choose **Gentle** (220 ms) or **Quick** (150 ms). System **Reduce Motion** disables added animations; shorter feedback uses its own timings.
+
+**Elastic scrolling** has its own switch. It responds to vertical wheel/trackpad input and single-finger touch in web clients, with a bounded 42 px pull and a spring return. Horizontal scrolling, pinch zoom and nested code/detail scrollers retain their behavior. Spring return uses its own timing, with a faster Quick setting. Native clients keep their existing scrolling.
 
 ## Install
 
@@ -62,6 +65,7 @@ index.client.tsx       Client registration and lifecycle
 client/settings.tsx   Settings UI using Paseo components
 client/preferences.ts Reactive preferences
 client/web.ts         Web-only DOM and animation adapter
+client/elastic-scroll.ts Web scroll boundary spring and cleanup
 paseo-plugin.json     Plugin identity and compatibility
 OVERVIEW.md           Paseo plugin listing description
 docs/architecture.md  Implementation notes

@@ -22,6 +22,8 @@ Row order and section identity also detect pin/unpin and status migration when m
 
 ## Motion lifecycle
 
+`client/elastic-scroll.ts` handles vertical boundary input for the known chat/workspace/file/changes scroll roots using passive listeners. It leaves scrollTop and native inertia under the host's control, skips nested code/detail scrollers and composes individual CSS translate with existing virtualizer transforms. Translated descendants are clipped inside the unchanged scroll content box to avoid extending scrollHeight. Feature/metric guards fail closed if the DOM or host styles differ. Pull is resisted and bounded to 42 px; a spring uses bounded integration steps and separate Gentle/Quick return timings. Active rebound suppresses ambient entrances; settling rebases the normal layout snapshots. Content changes, real scrolling and interaction cancel the feedback. Original boundary, clip, translate and custom-property values are restored without overwriting host changes.
+
 Preferences use a small reactive store and client-local storage. Reduce Motion is observed live. Dragging, scrolling, preference changes and teardown cancel active animations. Cleanup removes temporary styles, inert copies, injected CSS, DOM markers, observers, timers and event listeners.
 
 ## Compatibility

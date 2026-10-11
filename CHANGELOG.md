@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.4 · 2026-10-11
+
+- Add optional elastic scrolling to agent chat, project/status workspace lists, Files and Changes.
+- Bound wheel/trackpad and web touch edge feedback to 42 px, with resistance and a damped spring return. Keep native scrolling/inertia and virtualized row transforms.
+- Clip translated descendants inside the unchanged content box; guard scroll metrics and cancel feedback on content growth, real scrolling, interaction, blur, preference changes and unload.
+- Prevent native boundary feedback from duplicating the added rebound; restore the original overscroll/translate/clip styles on disable/unload.
+- Add an Elastic scrolling setting; respect Reduce Motion and provide a faster spring return in Quick mode.
+
 ## 0.4.3 · 2026-10-11
 
 - Move workspace rows smoothly when pinned, unpinned or moved between status groups, preserving their stable identity across remounts.
