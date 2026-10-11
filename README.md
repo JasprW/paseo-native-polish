@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md)
 
-Motion and desktop interaction polish for Paseo's existing interface. Sidebars, panes, tabs and disclosures transition smoothly while keeping Paseo's views and controls.
+Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures transition smoothly while keeping Paseo's views and controls.
 
 ## Features
 
@@ -14,7 +14,6 @@ Motion and desktop interaction polish for Paseo's existing interface. Sidebars, 
 | Explorer and timeline | Animate tree expansion/collapse, folder arrows, tool calls and thinking details. |
 | Overlays and controls | Short menu/dialog transitions, button press feedback and hover changes. |
 | Agent activity | Transition status changes and fade newly appended messages once near the conversation tail. |
-| Desktop feel | Subtle active pane header background, inactive window states and desktop button cursors. |
 
 Each motion category can be switched off. Choose **Gentle** (220 ms) or **Quick** (150 ms). System **Reduce Motion** disables added animations; shorter feedback uses its own timings.
 
@@ -26,7 +25,7 @@ Requires **Paseo 0.11.2**, with plugins enabled on the target daemon. The declar
 paseo plugin add git:JasprW/paseo-native-polish
 ```
 
-Open **Native Polish** in the sidebar, or use **Native Polish: motion settings** in the Command Center. The **Desktop feel** switch is separate from the motion switches.
+Open **Native Polish** in the sidebar, or use **Native Polish: motion settings** in the Command Center.
 
 ```sh
 paseo plugin update paseo-native-polish

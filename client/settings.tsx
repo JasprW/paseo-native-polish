@@ -8,14 +8,9 @@ export function MotionSettings({ theme, layout }: PluginSurfaceProps) {
     <View style={{ gap: 20, paddingVertical: layout.compact ? 12 : 20 }}>
       <Text style={{ color: theme.colors.foregroundMuted, lineHeight: 21 }}>
         {Platform.OS === "web"
-          ? "Desktop polish and responsive motion for Paseo. Changes apply immediately in this client. System Reduce Motion is always respected."
+          ? "Responsive motion for Paseo. Changes apply immediately in this client. System Reduce Motion is always respected."
           : "This first version adds motion to the desktop and web client. Mobile keeps its existing native transitions."}
       </Text>
-      <SettingsSection title="Desktop feel">
-        <SettingsCard>
-          <SettingsSwitch label="Pane focus, window state and desktop cursors" value={values.nativeChrome} onValueChange={(nativeChrome) => setPreferences({ ...values, nativeChrome })} />
-        </SettingsCard>
-      </SettingsSection>
       <SettingsSection title="Motion">
         <SettingsCard>
           <SettingsSwitch label="Enable motion" value={values.enabled} onValueChange={(enabled) => setPreferences({ ...values, enabled })} />

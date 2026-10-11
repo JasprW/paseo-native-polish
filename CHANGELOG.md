@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 · 2026-10-11
+
+- Keep the plugin limited to animations.
+- Remove pane header backgrounds, inactive window colors and opacity, added focus outlines and desktop cursor overrides.
+- Remove Desktop feel settings, focus detection and related timers/listeners. Existing animation preferences remain supported.
+
 ## 0.3.2 · 2026-10-11
 
 - Remove the added composer focus ring and its DOM decoration.

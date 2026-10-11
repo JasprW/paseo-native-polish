@@ -36,8 +36,7 @@ interface Event { target: Element | null; key?: string; metaKey?: boolean; ctrlK
 type Listener = (event: Event) => void;
 interface Media { matches: boolean; addEventListener(type: string, callback: () => void): void; removeEventListener(type: string, callback: () => void): void }
 declare const document: {
-  body: Element; head: Element; activeElement: Element | null; visibilityState: string;
-  hasFocus(): boolean;
+  body: Element; head: Element;
   querySelectorAll(selector: string): ArrayLike<Element>;
   createElement(tag: string): Element;
   addEventListener(type: string, callback: Listener, capture?: boolean): void;
@@ -202,19 +201,19 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  document.body.setAttribute("data-native-polish", "0.3.2");
+  document.body.setAttribute("data-native-polish", "0.4.0");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
     const saved = JSON.parse(window.localStorage.getItem(PREF_KEY) ?? 'null');
     if (saved && typeof saved === 'object') {
       const next = { ...defaults };
-      for (const key of ['enabled', 'sidebars', 'trees', 'timeline', 'panes', 'tabs', 'overlays', 'controls', 'states', 'messages', 'nativeChrome'] as const) if (typeof saved[key] === 'boolean') next[key] = saved[key];
+      for (const key of ['enabled', 'sidebars', 'trees', 'timeline', 'panes', 'tabs', 'overlays', 'controls', 'states', 'messages'] as const) if (typeof saved[key] === 'boolean') next[key] = saved[key];
       if (saved.pace === 'quick') next.pace = 'quick';
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.3.2', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.0', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -223,10 +222,6 @@ export function installMotion(): () => void {
   let passiveFrame = 0;
   let quietUntil = 0;
   let pointerOrigin: { x: number; y: number } | null = null;
-  let nativeFocusTimer = 0;
-  let nativeWindowTimer = 0;
-  let nativeFocusLock = 0;
-  let focusedPane: Element | null = null;
   const panelExits = new Set<Element>();
   const panelEntries = new Set<Element>();
   const active = new Map<Element, () => void>();
@@ -430,81 +425,13 @@ export function installMotion(): () => void {
     body[data-native-polish-states="true"] :is(${TAB},[data-testid^="sidebar-workspace-"]) :is(svg,path,circle) {
       transition: color 150ms,stroke 150ms,fill 150ms;
     }
-    @media (any-pointer: fine) {
-      body[data-native-polish-chrome="true"] :is(button,[role="button"],[role="menuitem"],[role="tab"]):not(a):not([data-testid*="resize-handle"]) { cursor: default !important; }
-      body[data-native-polish-chrome="true"] :is(a[href],[role="link"]) { cursor: pointer !important; }
-      body[data-native-polish-chrome="true"] [aria-roledescription="sortable"][aria-pressed="true"] { cursor: grabbing !important; }
-    }
-    body[data-native-polish-chrome="true"] ${PANE} [data-testid="workspace-tabs-row"] {
-      background-color: var(--colors-surface0,transparent);
-    }
-    body[data-native-polish-chrome="true"][data-native-polish-window-active="true"] [data-native-polish-pane-active="true"] [data-testid="workspace-tabs-row"] {
-      background-color: var(--colors-surface1,transparent);
-    }
-    body[data-native-polish-chrome="true"][data-native-polish-window-active="false"] ${TAB}[aria-selected="true"] {
-      background-color: var(--colors-surface1,transparent) !important;
-    }
-    body[data-native-polish-chrome="true"][data-native-polish-window-active="false"] [data-testid="workspace-tabs-row"] :is(button,[role="button"]) svg { opacity: .6; }
-    body[data-native-polish-chrome="true"][data-native-polish-window-active="false"] [data-testid^="sidebar-workspace-row-"][aria-selected="true"] {
-      background-color: var(--colors-surface-sidebar-hover,var(--colors-surface1,transparent)) !important;
-    }
-    body[data-native-polish-chrome="true"][data-native-polish-window-active="true"] :is(button,[role="button"],[role="tab"]):focus-visible {
-      outline: 2px solid var(--colors-ring,currentColor);
-      outline-offset: 2px;
-    }
-    body[data-native-polish-motion="true"][data-native-polish-chrome="true"] [data-testid="workspace-tabs-row"] {
-      transition: background-color 120ms;
-    }
   `;
   document.head.appendChild(stylesheet);
-  // Resolve the same theme token used by the host's focused tab. This hidden
-  // color probe lets keyboard-driven pane changes follow host state without
-  // reading private stores or changing keyboard routing.
-  const focusColor = document.createElement('div');
-  focusColor.setAttribute('aria-hidden', 'true');
-  focusColor.setAttribute('data-native-polish-color-probe', '');
-  for (const [key, value] of Object.entries({ position: 'fixed', width: '0', height: '0', overflow: 'hidden', 'pointer-events': 'none', visibility: 'hidden', 'background-color': 'var(--colors-surface2)' })) focusColor.style.setProperty(key, value);
-  document.body.appendChild(focusColor);
   function updateMotionFlags() {
     const preferences = getPreferences();
     for (const key of ['controls', 'tabs', 'trees', 'states'] as const) document.body.setAttribute(`data-native-polish-${key}`, String(canAnimate() && preferences[key]));
     document.body.setAttribute('data-native-polish-motion', String(canAnimate()));
-    document.body.setAttribute('data-native-polish-chrome', String(preferences.nativeChrome));
-    updateNativeChrome();
   }
-  function updateNativeChrome(target: Element | null = null) {
-    if (disposed) return;
-    const windowActive = document.hasFocus() && document.visibilityState !== 'hidden';
-    const activeValue = String(windowActive);
-    if (document.body.getAttribute('data-native-polish-window-active') !== activeValue) document.body.setAttribute('data-native-polish-window-active', activeValue);
-    const panes = live(PANE);
-    const requested = target?.closest(PANE);
-    if (requested && panes.includes(requested)) { focusedPane = requested; nativeFocusLock = Date.now() + 180; }
-    if (Date.now() >= nativeFocusLock && windowActive) {
-      const selectedColor = window.getComputedStyle(focusColor).getPropertyValue('background-color');
-      const hostFocused = selectedColor && selectedColor !== 'rgba(0, 0, 0, 0)' ? panes.find(pane => {
-        const selected = pane.querySelector(TAB + '[aria-selected="true"]');
-        return selected && window.getComputedStyle(selected).getPropertyValue('background-color') === selectedColor;
-      }) : null;
-      if (hostFocused) focusedPane = hostFocused;
-    }
-    if (!focusedPane || !panes.includes(focusedPane)) focusedPane = document.activeElement?.closest(PANE) ?? panes[0] ?? null;
-    for (const pane of panes) {
-      const value = String(pane === focusedPane);
-      if (pane.getAttribute('data-native-polish-pane-active') !== value) pane.setAttribute('data-native-polish-pane-active', value);
-    }
-  }
-  const onNativeFocus: Listener = event => {
-    updateNativeChrome(elementOf(event.target));
-    window.clearTimeout(nativeFocusTimer);
-    nativeFocusTimer = window.setTimeout(() => updateNativeChrome(), 200);
-  };
-  const onNativeWindow: Listener = () => {
-    window.clearTimeout(nativeWindowTimer);
-    // Moving focus into an iframe can blur the outer window even though the
-    // app is foreground. hasFocus() includes its child document after commit.
-    nativeWindowTimer = window.setTimeout(() => updateNativeChrome(), 0);
-  };
   function decorate(el: Element, attribute: string) {
     if (el.getAttribute(attribute) !== null) return;
     el.setAttribute(attribute, '');
@@ -671,7 +598,6 @@ export function installMotion(): () => void {
   }
   function refreshAmbient(allow = canAnimate()) {
     decorateControls();
-    updateNativeChrome();
     updateTabs(allow); updateFloating(allow); updatePaneLayout(allow);
     updateStates(allow); updateMessages(allow);
   }
@@ -743,17 +669,12 @@ export function installMotion(): () => void {
       const target = elementOf(record.target);
       if (!target || target.closest('[data-native-polish-ghost]')) return false;
       if (record.type === 'childList' || record.attributeName === 'data-status-bucket') return true;
-      if (target.matches(TAB)) {
-        window.clearTimeout(nativeFocusTimer);
-        nativeFocusTimer = window.setTimeout(() => updateNativeChrome(), 200);
-        return true;
-      }
+      if (target.matches(TAB)) return true;
       return target.matches(FLOATING + ', ' + PANE) || Boolean(target.querySelector(PANE));
     })) scheduleAmbient();
   });
   observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'class', 'aria-hidden', 'aria-expanded', 'aria-selected', 'aria-busy', 'data-status-bucket'] });
   const begin = (event: Event) => {
-    updateNativeChrome(elementOf(event.target));
     if (!canAnimate()) return;
     if (event.key) {
       if (event.repeat) return;
@@ -806,17 +727,11 @@ export function installMotion(): () => void {
   document.addEventListener('click', onClick, true);
   document.addEventListener('keydown', begin, true);
   document.addEventListener('wheel', onScroll, true);
-  document.addEventListener('focusin', onNativeFocus, true);
-  document.addEventListener('visibilitychange', onNativeWindow);
-  window.addEventListener('focus', onNativeWindow);
-  window.addEventListener('blur', onNativeWindow);
   reduceMotion.addEventListener('change', onReduce);
   return () => {
     disposed = true;
     document.body.removeAttribute("data-native-polish");
-    for (const key of ['controls', 'tabs', 'trees', 'states', 'motion', 'chrome', 'window-active']) document.body.removeAttribute(`data-native-polish-${key}`);
-    for (const pane of all(document.body, PANE)) pane.removeAttribute('data-native-polish-pane-active');
-    focusColor.remove();
+    for (const key of ['controls', 'tabs', 'trees', 'states', 'motion']) document.body.removeAttribute(`data-native-polish-${key}`);
     stylesheet.remove();
     for (const cleanup of decorations.values()) cleanup();
     decorations.clear();
@@ -827,13 +742,8 @@ export function installMotion(): () => void {
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('keydown', begin, true);
     document.removeEventListener('wheel', onScroll, true);
-    document.removeEventListener('focusin', onNativeFocus, true);
-    document.removeEventListener('visibilitychange', onNativeWindow);
-    window.removeEventListener('focus', onNativeWindow);
-    window.removeEventListener('blur', onNativeWindow);
     reduceMotion.removeEventListener('change', onReduce);
     window.clearTimeout(deadline); window.cancelAnimationFrame(frame); window.cancelAnimationFrame(passiveFrame);
-    window.clearTimeout(nativeFocusTimer); window.clearTimeout(nativeWindowTimer);
     tabRows.clear(); floating.clear(); paneBaseline.clear(); iconStates.clear(); toolStates.clear(); agentStates.clear();
     pending = null; treeTarget = null; stopAll();
   };

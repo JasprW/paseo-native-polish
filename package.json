@@ -1,7 +1,7 @@
 {
   "name": "paseo-native-polish",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.4.0",
   "files": [
     "paseo-plugin.json",
     "OVERVIEW.md",
@@ -22,7 +22,7 @@
     "typescript": "^5.9.3",
     "zod": "^4.4.3"
   },
-  "description": "Workspace motion and desktop interaction polish for Paseo",
+  "description": "Workspace motion for Paseo",
   "license": "Apache-2.0",
   "author": "JasprW",
   "repository": {

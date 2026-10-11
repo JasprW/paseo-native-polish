@@ -14,9 +14,7 @@ Sidebars animate the actual width owner. A retained sidebar keeps its slot durin
 
 Menus preserve host-provided entrances where present. Exit copies have duplicate IDs and interactive media removed. They cannot receive focus or accessibility input. Newly appended message IDs fade once near the tail; initial history and virtualized remounts do not replay.
 
-## Focus and lifecycle
-
-Pane focus follows pointer/focus events and the host's themed focused-tab color, without changing keyboard routing. `document.hasFocus()` accounts for child iframe focus when distinguishing foreground and background windows. Desktop feel uses theme colors and a separate preference. Version 0.3.1 removed added tab/pane underlines; 0.3.2 removed the added composer focus ring.
+## Motion lifecycle
 
 Preferences use a small reactive store and client-local storage. Reduce Motion is observed live. Dragging, scrolling, preference changes and teardown cancel active animations. Cleanup removes temporary styles, inert copies, injected CSS, DOM markers, observers, timers and event listeners.
 

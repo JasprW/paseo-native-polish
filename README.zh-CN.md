@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-为 Paseo 现有界面增加动效和桌面交互细节，沿用原有视图和控件。
+为 Paseo 现有界面增加动效，沿用原有视图和控件。
 
 ## 功能
 
@@ -12,9 +12,8 @@
 - 文件树、文件夹箭头、工具调用和 thinking 展开／收起。
 - 菜单、弹层、按钮按压和 hover 反馈。
 - Agent 状态变化，以及对话尾部新消息的一次淡入。
-- 活动 pane 标题栏背景、窗口失焦状态和桌面按钮光标。
 
-各类动效可独立关闭；支持 Gentle（220 ms）和 Quick（150 ms）。遵循系统 Reduce Motion 设置。Desktop feel 单独控制桌面交互细节。
+各类动效可独立关闭；支持 Gentle（220 ms）和 Quick（150 ms）。遵循系统 Reduce Motion 设置。
 
 ## 安装
 
