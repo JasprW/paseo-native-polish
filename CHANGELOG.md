@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.7 · 2026-10-11
+
+- Allow deliberate same-direction pulls at an existing top/bottom boundary before the previous wheel tail has fully expired.
+- Distinguish sustained renewed pressure and spaced/discrete wheel impulses from isolated momentum fluctuations; retain confirming input and resume from the visible offset.
+- Adapt the release gap to observed event cadence (40–120 ms), so sparse wheel input does not prematurely start the return. Momentum release still bypasses this hold.
+
 ## 0.4.6 · 2026-10-11
 
 - Latch wheel release for the entire gesture: momentum fluctuations and short tail gaps cannot repeatedly restart the rebound. A quiet gap or direction change starts a new gesture.

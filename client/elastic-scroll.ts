@@ -41,11 +41,12 @@ const SURFACES = '[data-testid="agent-chat-scroll"], [data-testid="sidebar-proje
 const MARKER = 'data-native-polish-elastic';
 const OFFSET = '--native-polish-elastic-offset';
 const COEFFICIENT = .55;
-// Wheel events have no platform phase information. Keep a release terminal
-// until a quiet gap or direction change starts a distinct gesture.
+// Wheel events have no platform phase information. Keep release latched for
+// the momentum tail, but allow deliberate renewed input at the same edge.
 interface WheelGesture {
   time: number; magnitude: number; peak: number; decays: number;
   momentum: boolean; released: boolean; collided: boolean; direction: number;
+  trough: number; renewed: number; renewedDistance: number; interval: number;
 }
 interface Spring {
   scroll: Element; content: Element; pull: number; position: number; velocity: number;
@@ -161,7 +162,8 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
         || state.owners.some(el => !el.isConnected || el.style.getPropertyValue('translate') !== state.translations.get(el))) { finish(state); continue; }
       // Pulling is direct manipulation, with no easing/lag. Only release runs
       // the spring; it is critically damped, so it returns without wobbling.
-      const held = state.touching || (!state.gesture?.released && now - state.lastInput < 40);
+      const hold = state.gesture ? Math.min(120, Math.max(40, state.gesture.interval * 1.5)) : 40;
+      const held = state.touching || (!state.gesture?.released && now - state.lastInput < hold);
       if (held) continue;
       if (state.gesture) state.gesture.released = true;
       const frequency = options.quick() ? 32 : 28;
@@ -247,11 +249,39 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
     const now = Date.now();
     const previous = wheelGestures.get(scroll);
     if (!direction) return;
-    const same = previous && now - previous.time < 240 && direction === previous.direction;
-    const gesture: WheelGesture = same ? previous : {
+    const gap = previous ? now - previous.time : 0;
+    let same = Boolean(previous && gap < 240 && direction === previous.direction);
+    let renewedDelta = delta;
+    if (same && previous?.released) {
+      previous.trough = Math.min(previous.trough, magnitude);
+      // A single amplitude spike is not enough to reopen an inertial tail.
+      // Require sustained pressure above its low point, or a distinct spaced
+      // impulse. Line/page wheels have no smooth trackpad momentum to retain.
+      const pressure = magnitude >= Math.max(1, previous.trough * 2.5)
+        && magnitude >= previous.magnitude * .95;
+      previous.renewed = pressure ? previous.renewed + 1 : 0;
+      previous.renewedDistance = pressure ? previous.renewedDistance + magnitude : 0;
+      const impulse = gap >= 64 && magnitude >= 1 && (
+        !previous.momentum && magnitude >= previous.magnitude * .98
+        || magnitude >= previous.magnitude * 2.5 && magnitude - previous.magnitude >= 2
+      );
+      if (event.deltaMode === 1 || event.deltaMode === 2 || impulse
+        || previous.renewed >= 2 && previous.renewedDistance >= 3) {
+        // Retain the small confirming inputs so a gentle new pull is not lost.
+        renewedDelta = direction * Math.max(magnitude, previous.renewedDistance);
+        same = false;
+      }
+    }
+    const gesture: WheelGesture = same && previous ? previous : {
       time: now, magnitude, peak: magnitude, decays: 0,
       momentum: false, released: false, collided: false, direction,
+      trough: magnitude, renewed: 0, renewedDistance: 0,
+      interval: gap > 0 && gap < 160 ? gap : 16,
     };
+    if (same) gesture.interval = gesture.interval * .5 + gap * .5;
+    // While still pulling, follow the current input as the eventual release
+    // floor. Once released, only lower samples move that floor.
+    if (!gesture.released) gesture.trough = magnitude;
     gesture.decays = same && magnitude < gesture.magnitude * .98 ? gesture.decays + 1 : 0;
     gesture.peak = Math.max(gesture.peak, magnitude);
     gesture.magnitude = magnitude;
@@ -268,7 +298,7 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
       if (gesture.collided) gesture.released = true;
       return;
     }
-    pull(scroll, delta, false, gesture);
+    pull(scroll, renewedDelta, false, gesture);
     if (edge) {
       gesture.collided = true;
       if (gesture.momentum) gesture.released = true;
