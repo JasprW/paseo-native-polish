@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 · 2026-10-11
+
+- Keep maximize/restore under one animation owner throughout the gesture, including hidden-pane commits.
+- Avoid measuring active pane/sidebars into the ambient pane layout baseline.
+- Animate tab reordering only when key order changes, using positions relative to the tab rail.
+- Exclude nested sidebar width owners and child tab motion while a parent is animating.
+
 ## 0.4.0 · 2026-10-11
 
 - Keep the plugin limited to animations.

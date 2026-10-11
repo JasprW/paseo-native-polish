@@ -12,6 +12,8 @@ Pointer-down captures layout before host gesture handlers commit. Click and keyb
 
 Sidebars animate the actual width owner. A retained sidebar keeps its slot during exit; an unmounted Explorer gets an inert copy in that slot so adjacent panes resize. Pane, tab and reorder changes use bounded FLIP geometry. Disclosure animation watches direct membership changes; tree identity follows ancestor names and indentation rather than changing numeric row IDs.
 
+Maximize/restore captures retain ownership for the full gesture, so the ambient membership observer cannot replay the same pane transition. Pane baselines exclude active parent/pane animation frames. Only outer sidebar width owners animate. Tab FLIP requires a real key-order change and uses tab-rail-relative positions; children do not get a second transition from sidebar/pane movement.
+
 Menus preserve host-provided entrances where present. Exit copies have duplicate IDs and interactive media removed. They cannot receive focus or accessibility input. Newly appended message IDs fade once near the tail; initial history and virtualized remounts do not replay.
 
 ## Motion lifecycle

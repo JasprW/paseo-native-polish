@@ -73,13 +73,18 @@ const visible = (el: Element) => {
   return el.isConnected && r.width > 1 && r.height > 1 && r.bottom > 0 && r.top < window.innerHeight;
 };
 const elementOf = (el: Element | null) => el?.nodeType === 1 ? el : el?.parentElement ?? null;
+function hasAncestor(el: Element, ancestors: Iterable<Element>): boolean {
+  const owners = new Set(ancestors);
+  for (let parent = el.parentElement; parent; parent = parent.parentElement) if (owners.has(parent)) return true;
+  return false;
+}
 
 interface Snapshot { element: Element; box: Rect; copy: Element; parent: Element | null; next: Element | null }
 interface Disclosure { element: Element; height: number; children: Element[]; details: Snapshot[] }
 interface RowSnapshot extends Snapshot { key: string }
 interface Tree { element: Element; rows: RowSnapshot[] }
 interface PaneBox { element: Element; box: Rect }
-interface Capture { panels: Map<string, Snapshot>; panes: Map<string, PaneBox>; paneMotion: boolean; disclosure: Disclosure | null; tree: Tree | null }
+interface Capture { panels: Map<string, Snapshot>; panes: Map<string, PaneBox>; paneAction: boolean; paneMotion: boolean; disclosure: Disclosure | null; tree: Tree | null }
 const PANE = '[data-testid^="workspace-pane-"]';
 const PANE_ACTION = '[data-testid="workspace-maximize-pane"], [data-testid="workspace-restore-pane"]';
 const TAB = '[data-testid^="workspace-tab-"][role="button"][aria-selected]';
@@ -154,6 +159,14 @@ function panels(): Map<string, Element> {
     const el = all(document.body, selector).find(visible);
     if (el) result.set(name, panelOwner(el));
   }
+  // Only the outer width owner animates. A nested Changes rail must travel
+  // with its Explorer/sidebar instead of running a second width animation.
+  const owners = Array.from(result.values());
+  const seen = new Set<Element>();
+  for (const [key, el] of result) {
+    if (seen.has(el) || hasAncestor(el, owners)) result.delete(key);
+    else seen.add(el);
+  }
   return result;
 }
 
@@ -201,7 +214,7 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  document.body.setAttribute("data-native-polish", "0.4.0");
+  document.body.setAttribute("data-native-polish", "0.4.1");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -213,7 +226,7 @@ export function installMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.0', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.1', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -388,7 +401,7 @@ export function installMotion(): () => void {
   // Persistent observation adds motion to async updates (new tabs/messages and
   // status changes) without relying on a click being in progress. No content
   // text is compared, and message DOM is never cloned.
-  interface TabState { chip: Element; shot: Snapshot }
+  interface TabState { chip: Element; shot: Snapshot; left: number }
   let tabRows = new Map<Element, Map<string, TabState>>();
   interface FloatingSnapshot extends Snapshot { opacity: number }
   let floating = new Map<Element, FloatingSnapshot>();
@@ -464,16 +477,18 @@ export function installMotion(): () => void {
     for (const scroll of live(TAB_ROW)) {
       const old = tabRows.get(scroll);
       const next = new Map<string, TabState>();
+      const scrollLeft = rect(scroll).left;
       for (const chip of all(scroll, TAB).filter(visible).slice(0, 80)) {
         const key = chip.getAttribute('data-testid')!;
         const slot = tabSlot(chip, scroll);
         const previous = old?.get(key);
         // Reuse an in-flight snapshot: animation rects are not layout changes.
         const shot = active.has(slot) && previous ? previous.shot : snapshot(slot);
-        next.set(key, { chip, shot });
+        const left = active.has(slot) && previous ? previous.left : shot.box.left - scrollLeft + scroll.scrollLeft;
+        next.set(key, { chip, shot, left });
       }
       nextRows.set(scroll, next);
-      if (!allow || !getPreferences().tabs || !old || Date.now() < quietUntil) continue;
+      if (!allow || !getPreferences().tabs || !old || Date.now() < quietUntil || hasAncestor(scroll, active.keys())) continue;
       const removed = Array.from(old).filter(([key]) => !next.has(key));
       const added = Array.from(next).filter(([key]) => !old.has(key));
       if (removed.length || added.length) tabSettling.set(scroll, Date.now() + duration() + 50);
@@ -485,11 +500,14 @@ export function installMotion(): () => void {
         const restore = temporaryStyles(el, { overflow: 'hidden', 'min-width': '0', 'max-width': `${width}px`, 'flex-shrink': '0' });
         animate(el, [{ width: '0px', opacity: 0 }, { width: `${width}px`, opacity: 1 }], restore);
       }
-      // Width animation moves siblings in normal flow. Pure reorder uses FLIP.
-      if (!removed.length && !added.length && Date.now() >= (tabSettling.get(scroll) ?? 0)) for (const [key, item] of next) {
+      // Only a changed key order is a reorder. Sidebar/pane movement and tab
+      // rail scrolling must not animate the same children a second time.
+      const oldOrder = Array.from(old.keys());
+      const reordered = Array.from(next.keys()).some((key, index) => key !== oldOrder[index]);
+      if (reordered && !removed.length && !added.length && Date.now() >= (tabSettling.get(scroll) ?? 0)) for (const [key, item] of next) {
         const previous = old.get(key);
         if (!previous || active.has(item.shot.element) || item.shot.element.style.getPropertyValue('transform')) continue;
-        const dx = previous.shot.box.left - item.shot.box.left;
+        const dx = previous.left - item.left;
         if (Math.abs(dx) > 1 && Math.abs(previous.shot.box.width - item.shot.box.width) < 1 && Date.now() >= quietUntil) animate(item.shot.element, [{ transform: `translateX(${dx}px)` }, { transform: 'translateX(0)' }]);
       }
     }
@@ -519,10 +537,19 @@ export function installMotion(): () => void {
     floating = next;
   }
   function updatePaneLayout(allow: boolean) {
+    // Keep the committed baseline out of our own transformed frames. Once
+    // motion ends, the observer rebases from the clean host layout.
+    if (panelEntries.size || panelExits.size || Array.from(active.keys()).some(el => el.matches(PANE))) {
+      paneTransition = null;
+      return;
+    }
     const next = paneBoxes();
     const shared = Array.from(next.keys()).some(key => paneBaseline.has(key));
     const membershipChanged = next.size !== paneBaseline.size || Array.from(next.keys()).some(key => !paneBaseline.has(key));
-    if (!allow || !getPreferences().panes || pending?.paneMotion) paneTransition = null;
+    // Maximize/restore belongs to the explicit capture for the whole gesture,
+    // including after its animation has been consumed. Hidden-pane membership
+    // changes must not enqueue the same transition in the ambient observer.
+    if (!allow || !getPreferences().panes || pending?.paneAction) paneTransition = null;
     else {
       if (shared && membershipChanged) { paneTransition = paneBaseline; paneTransitionUntil = Date.now() + 700; }
       if (paneTransition && (Date.now() > paneTransitionUntil || animatePanes(paneTransition, next))) paneTransition = null;
@@ -611,6 +638,7 @@ export function installMotion(): () => void {
   const capture = (target: Element | null): Capture => ({
     panels: new Map(Array.from(panels()).filter(([, el]) => visible(el)).map(([key, el]) => [key, snapshot(el)])),
     panes: paneBoxes(),
+    paneAction: Boolean(target?.closest(PANE_ACTION)),
     paneMotion: Boolean(target?.closest(PANE_ACTION)),
     disclosure: target ? captureDisclosure(disclosureFor(target)) : null,
     tree: target ? captureTree(target) : null,
@@ -653,6 +681,7 @@ export function installMotion(): () => void {
     pending = {
       panels: nextPanels,
       panes: pending.paneMotion ? currentPanes : pending.panes,
+      paneAction: pending.paneAction,
       paneMotion: pending.paneMotion && !paneChanged,
       disclosure: disclosureChanged ? captureDisclosure(disclosure.element) : disclosure,
       tree: nextTree ?? pending.tree,
