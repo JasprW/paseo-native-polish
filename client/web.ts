@@ -1,6 +1,7 @@
 import { Platform } from "react-native";
 import { defaults, getPreferences, setPreferences, subscribePreferences } from "./preferences";
 import { installElasticScroll } from "./elastic-scroll";
+import { installEdgePeek } from "./edge-peek";
 
 /* Desktop/Web adapter for Paseo 0.11.2. Host DOM is not a public plugin API.
  * Keep selectors here; native clients never touch these globals. No host events
@@ -228,19 +229,19 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  document.body.setAttribute("data-native-polish", "0.4.8");
+  document.body.setAttribute("data-native-polish", "0.4.9");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
     const saved = JSON.parse(window.localStorage.getItem(PREF_KEY) ?? 'null');
     if (saved && typeof saved === 'object') {
       const next = { ...defaults };
-      for (const key of ['enabled', 'sidebars', 'trees', 'timeline', 'panes', 'tabs', 'overlays', 'controls', 'states', 'messages', 'elasticScroll'] as const) if (typeof saved[key] === 'boolean') next[key] = saved[key];
+      for (const key of ['enabled', 'sidebars', 'trees', 'timeline', 'panes', 'tabs', 'overlays', 'controls', 'states', 'messages', 'elasticScroll', 'edgePeek'] as const) if (typeof saved[key] === 'boolean') next[key] = saved[key];
       if (saved.pace === 'quick') next.pace = 'quick';
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.8', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.9', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -256,7 +257,8 @@ export function installMotion(): () => void {
   const panelEntries = new Set<Element>();
   const active = new Map<Element, () => void>();
   const ghosts = new Set<Element>();
-  const canAnimate = () => !disposed && !suspended && getPreferences().enabled && !reduceMotion.matches;
+  let edgePeek: ReturnType<typeof installEdgePeek> | null = null;
+  const canAnimate = () => !disposed && !suspended && !edgePeek?.isTransitioning() && getPreferences().enabled && !reduceMotion.matches;
   const duration = () => getPreferences().pace === 'quick' ? 150 : 220;
 
   const stopAll = () => {
@@ -874,14 +876,14 @@ export function installMotion(): () => void {
     if (disposed || suspended) return;
     for (const record of records) {
       const target = elementOf(record.target);
-      if (!target || target.closest('[data-native-polish-ghost]')) continue;
+      if (!target || target.closest('[data-native-polish-ghost],[data-native-polish-peek-trigger]')) continue;
       // Editors own their selection, composition and internal render loop.
       // Caret/token/terminal updates never invalidate app motion baselines.
       if (target.closest(EDITING)) continue;
       const structural = record.type === 'childList';
       if (structural) {
         const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
-        if (nodes.length && nodes.every(node => node.nodeType === 1 && node.getAttribute('data-native-polish-ghost') !== null)) continue;
+        if (nodes.length && nodes.every(node => node.nodeType === 1 && (node.getAttribute('data-native-polish-ghost') !== null || node.getAttribute('data-native-polish-peek-trigger') !== null))) continue;
       }
       // Offset/clip/translate writes belong solely to the elastic adapter.
       // Host spinner leaf styles likewise do not invalidate whole layouts.
@@ -961,14 +963,16 @@ export function installMotion(): () => void {
     }, 160);
   };
   const onPointerMove: Listener = event => {
+    if (suspended && !document.hidden && document.hasFocus()) resumeMotion();
     if (!pointerOrigin || event.buttons !== 1) return;
     if (Math.abs((event.clientX ?? pointerOrigin.x) - pointerOrigin.x) + Math.abs((event.clientY ?? pointerOrigin.y) - pointerOrigin.y) < 6) return;
     quietUntil = Date.now() + 250;
     pending = null; treeTarget = null; stopAll();
   };
-  const onReduce = () => { updateMotionFlags(); if (reduceMotion.matches) { pending = null; stopAll(); refreshAmbient(false); } };
+  const onReduce = () => { edgePeek?.refresh(); updateMotionFlags(); if (reduceMotion.matches) { pending = null; stopAll(); refreshAmbient(false); } };
   const unsubscribe = subscribePreferences(() => {
     try { window.localStorage.setItem(PREF_KEY, JSON.stringify(getPreferences())); } catch { /* optional persistence */ }
+    edgePeek?.refresh();
     pending = null; stopAll(); updateMotionFlags(); refreshAmbient(false);
   });
   // RN Pressable / gesture handlers may commit on pointerup, before the DOM
@@ -1007,7 +1011,31 @@ export function installMotion(): () => void {
     passiveFrame = window.requestAnimationFrame(() => { passiveFrame = 0; dirty.clear(); refreshAmbient(false); });
   }
   const onVisibility: Listener = () => { if (document.hidden) pauseMotion(); else resumeMotion(); };
+  let blurTimer = 0;
+  const onWindowBlur: Listener = () => {
+    window.clearTimeout(blurTimer);
+    // Focus entering a sandboxed preview can blur the parent Window while
+    // the document's focus chain still belongs to this app window.
+    blurTimer = window.setTimeout(() => {
+      blurTimer = 0;
+      if (document.hidden || !document.hasFocus()) pauseMotion();
+    }, 0);
+  };
+  const onWindowFocus: Listener = () => { window.clearTimeout(blurTimer); blurTimer = 0; resumeMotion(); };
   const onClick: Listener = onCommit;
+  edgePeek = installEdgePeek({
+    enabled: () => !disposed && getPreferences().enabled && getPreferences().edgePeek,
+    motion: () => getPreferences().enabled && getPreferences().sidebars && !reduceMotion.matches,
+    quick: () => getPreferences().pace === 'quick',
+    panels,
+    onTransition: () => {
+      clearCapture(); stopAll();
+      updateMotionFlags();
+      // Rebase pane/list geometry; the preview owns only its horizontal slide.
+      refreshAmbient(false);
+      scheduleAmbient();
+    },
+  });
   document.addEventListener('pointerdown', begin, true);
   document.addEventListener('pointerup', onCommit, true);
   document.addEventListener('pointermove', onPointerMove, true);
@@ -1017,11 +1045,12 @@ export function installMotion(): () => void {
   document.addEventListener('compositionstart', onCompositionStart, true);
   document.addEventListener('compositionend', onCompositionEnd, true);
   document.addEventListener('visibilitychange', onVisibility);
-  window.addEventListener('blur', pauseMotion);
-  window.addEventListener('focus', resumeMotion);
+  window.addEventListener('blur', onWindowBlur);
+  window.addEventListener('focus', onWindowFocus);
   reduceMotion.addEventListener('change', onReduce);
   return () => {
     disposed = true;
+    edgePeek?.dispose();
     elastic.dispose();
     document.body.removeAttribute("data-native-polish");
     for (const key of ['controls', 'tabs', 'trees', 'states', 'motion']) document.body.removeAttribute(`data-native-polish-${key}`);
@@ -1038,8 +1067,9 @@ export function installMotion(): () => void {
     document.removeEventListener('compositionstart', onCompositionStart, true);
     document.removeEventListener('compositionend', onCompositionEnd, true);
     document.removeEventListener('visibilitychange', onVisibility);
-    window.removeEventListener('blur', pauseMotion);
-    window.removeEventListener('focus', resumeMotion);
+    window.clearTimeout(blurTimer);
+    window.removeEventListener('blur', onWindowBlur);
+    window.removeEventListener('focus', onWindowFocus);
     reduceMotion.removeEventListener('change', onReduce);
     window.clearTimeout(deadline); window.cancelAnimationFrame(frame); window.cancelAnimationFrame(passiveFrame);
     window.clearTimeout(scrollDeadline); dirty.clear();

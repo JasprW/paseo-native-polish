@@ -64,3 +64,11 @@ paseo plugin reload paseo-native-polish
 ## 许可证
 
 [Apache-2.0](LICENSE)。这是独立的 Paseo 插件。
+
+## 边缘侧栏预览
+
+侧栏收起时，鼠标停在左右窗口边缘 7 px 范围内约 180 ms，会临时浮出真实侧栏。预览叠加在画布上，不占布局宽度。移开后等待 260 ms 收回；Escape 可立即关闭。标题栏、触控布局、拖动中和已经展开的侧栏不会触发。菜单打开或在侧栏输入框中编辑时保留预览。
+
+功能在客户端运行，本机和远端 workspace 都适用。收起的侧栏在对应窗口边缘预留透明的 7 px 触发区，覆盖 HTML 预览的 iframe 边缘；这 7 px 内的鼠标输入由触发区接收，预览内容和 sandbox 保持原样。移回 HTML 内容时按正常延迟收回侧栏。
+
+Native Polish 设置中的 **Peek at hidden sidebars from screen edges** 可单独关闭。正常按钮与快捷键仍可展开常规侧栏。预览会暂时改变 Paseo 的侧栏可见状态，再在离开、窗口失焦、窗口缩放、禁用和卸载时恢复收起。支持系统减少动态效果。

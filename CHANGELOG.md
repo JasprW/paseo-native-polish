@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.9 · 2026-10-11
+
+- Hover near either window edge to preview a hidden desktop sidebar over the canvas, without consuming its flex layout slot. Leave to restore the closed state.
+- Use real host controls and interactive views; mount Explorer only for the preview and retain existing sidebar settings/contents.
+- Add an independent edge-preview setting, a 180 ms entry delay, a 260 ms exit grace period and Escape dismissal. Ignore touch, dragging, titlebar edges, dialogs and already-open sidebars.
+- Preserve interaction with portal menus and focused inputs. Close previews on blur, resize, disabling or unload. Regular toggles/shortcuts can still open the normal layout dock.
+- Keep the preview under one motion owner, rebase underlying motion captures and respect Reduce Motion.
+- Receive edge hover above sandboxed HTML previews with transparent 7 px window gutters. Distinguish nested-frame focus from window blur, and close a preview when the cursor returns to frame content.
+
 ## 0.4.8 · 2026-10-11
 
 - Restrict interaction snapshots to actionable controls and supported chrome shortcuts. Text selection, caret placement, ordinary editable Enter/Space, editor/terminal shortcuts and IME composition do not capture global layouts.

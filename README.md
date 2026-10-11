@@ -9,6 +9,7 @@ Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures tra
 | Area | Behavior |
 | --- | --- |
 | Sidebars | Animate left sidebar and Explorer expansion/collapse, including adjacent pane resizing. Workspace rows fade in on creation and out on archive; neighboring rows move into place. |
+| Edge preview | Hover at a hidden desktop sidebar’s window edge for a temporary, interactive overlay. Leaving restores the closed state without resizing the canvas. |
 | Panes | Animate split, close, maximize and restore. |
 | Tabs | Animate opening, closing and reordering; transition selection colors. |
 | Explorer and timeline | Animate tree expansion/collapse, folder arrows, tool calls and thinking details. |
@@ -17,6 +18,12 @@ Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures tra
 | Scrolling | Damped edge rebound for agent conversations, workspace lists, Files and Changes. Normal scrolling and inertia stay with Paseo. |
 
 Workspace rows also move smoothly when pinned, unpinned or moved between status groups. Project creation/removal animates the group and surrounding list. These transitions use the sidebar motion setting.
+
+**Edge preview** has its own switch and is enabled by default. Move a mouse within 7 px of the left or right window edge, below the titlebar, and pause for 180 ms. The hidden sidebar slides over the canvas. Leaving allows 260 ms to return before it closes; Escape dismisses it until the mouse leaves the edge. Open menus and focused inputs keep the preview available while you interact. Clicking the normal sidebar toggle or using its shortcut can open the regular layout dock. Already-open sidebars and compact/touch layouts retain their behavior.
+
+This runs in the client for local and remote workspaces. Transparent 7 px gutters reserve the activation edges while the corresponding sidebar is hidden, including above sandboxed HTML previews. The preview contents and sandbox are untouched; controls within those outer gutters receive hover through the plugin instead of the underlying page. Moving back into the HTML content starts the usual close delay.
+
+The preview temporarily opens the real host sidebar, places it outside flex layout before the opening commit, and closes it again on exit. Sidebar visibility is transiently updated in Paseo during the preview; no copied controls or private React state are used.
 
 Each motion category can be switched off. Choose **Gentle** (220 ms) or **Quick** (150 ms). System **Reduce Motion** disables added animations; shorter feedback uses its own timings.
 
@@ -70,6 +77,7 @@ client/settings.tsx   Settings UI using Paseo components
 client/preferences.ts Reactive preferences
 client/web.ts         Web-only DOM and animation adapter
 client/elastic-scroll.ts Web scroll boundary spring and cleanup
+client/edge-peek.ts    Temporary desktop edge preview and restoration
 paseo-plugin.json     Plugin identity and compatibility
 OVERVIEW.md           Paseo plugin listing description
 docs/architecture.md  Implementation notes

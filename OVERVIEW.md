@@ -2,6 +2,8 @@ Native Polish adds motion to Paseo's desktop and web client: sidebar expansion a
 
 Requires Paseo 0.11.2. The desktop and web adapter depends on that version's internal view structure, so later minor versions require a compatibility review. iOS and Android keep their existing motion.
 
+On desktop, hovering at a hidden sidebar's window edge temporarily opens the real sidebar over the canvas without resizing panes. Move away to close it, or press Escape. This has its own setting and works in local and remote workspaces, including alongside HTML previews. While enabled, the corresponding outermost 7 px below the titlebar are reserved for hover activation. Normal sidebar buttons still open the regular layout dock.
+
 Workspace rows fade in when created and fade out when archived. Pinning, unpinning and status-group changes move the existing row smoothly. Project creation/removal animates the group and neighboring rows moving into place. This uses the sidebar motion setting and works in project and status grouping.
 
 Elastic scrolling adds a small damped rebound at the top and bottom of agent conversations, workspace lists, Files and Changes. It has a separate switch and responds to vertical wheel/trackpad and single-finger web touch input. Normal scrolling, horizontal gestures, pinch zoom and nested code/detail scrollers keep their behavior. Native clients retain their existing scrolling.
