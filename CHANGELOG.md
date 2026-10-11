@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.5 · 2026-10-11
+
+- Make elastic pull respond directly to input, removing spring-follow lag and the 80 ms release hold.
+- Use viewport-dependent rubber-band resistance and a faster critically damped return without oscillation.
+- Detect sustained decaying wheel input as momentum release; give edge collisions one displacement instead of repeatedly extending the pull.
+- Resume input from the current visible offset instead of jumping back to an earlier maximum.
+- Use platform overscroll in supported macOS/iOS browsers; document the Electron native-scrollBounce limitation.
+
 ## 0.4.4 · 2026-10-11
 
 - Add optional elastic scrolling to agent chat, project/status workspace lists, Files and Changes.
