@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.3 · 2026-10-11
+
+- Move workspace rows smoothly when pinned, unpinned or moved between status groups, preserving their stable identity across remounts.
+- Animate project creation/removal and surrounding rows moving into place. Fully visible groups use one animation owner; clipped groups use visible row/header motion.
+- Animate section headers appearing/disappearing with list changes, including the Pinned section.
+- Continue interrupted list motion from its current position on a new structural commit; exclude initial mount, filter/grouping changes, scrolling and dragging.
+
 ## 0.4.2 · 2026-10-11
 
 - Animate workspace row creation and archive removal, including neighboring rows and section headers moving into place.

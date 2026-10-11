@@ -15,6 +15,8 @@ Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures tra
 | Overlays and controls | Short menu/dialog transitions, button press feedback and hover changes. |
 | Agent activity | Transition status changes and fade newly appended messages once near the conversation tail. |
 
+Workspace rows also move smoothly when pinned, unpinned or moved between status groups. Project creation/removal animates the group and surrounding list. These transitions use the sidebar motion setting.
+
 Each motion category can be switched off. Choose **Gentle** (220 ms) or **Quick** (150 ms). System **Reduce Motion** disables added animations; shorter feedback uses its own timings.
 
 ## Install

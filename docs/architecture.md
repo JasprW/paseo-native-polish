@@ -18,6 +18,8 @@ Menus preserve host-provided entrances where present. Exit copies have duplicate
 
 Workspace sidebar membership uses stable workspace test IDs, including mounted rows outside the viewport. Only visible rows and section headers get bounded snapshots. Creation fades in; removal uses an inert exit copy and scroll-relative FLIP positions for surviving neighbors. Initial list mounts, section toggles and active parent/sidebar animations rebase without row motion. Project trailing creation buttons are excluded from disclosure capture. Workspace row motion shares the sidebar preference.
 
+Row order and section identity also detect pin/unpin and status migration when membership stays unchanged. Horizontal and vertical FLIP positions survive keyed row remounts. A new structural commit can interrupt existing row motion from its current visual position; animation-generated mutations do not restart it. Fully visible project groups get one entrance/exit owner, while clipped groups use visible rows and headers. A group containing a migrating workspace keeps that row under its own motion owner. Filter/grouping gestures rebase instead of looking like project deletion/creation.
+
 ## Motion lifecycle
 
 Preferences use a small reactive store and client-local storage. Reduce Motion is observed live. Dragging, scrolling, preference changes and teardown cancel active animations. Cleanup removes temporary styles, inert copies, injected CSS, DOM markers, observers, timers and event listeners.

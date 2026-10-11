@@ -66,6 +66,7 @@ const PROJECT = '[data-testid^="sidebar-project-row-"]';
 const STATUS = '[data-testid^="sidebar-status-group-"]:not([data-testid^="sidebar-status-group-rows-"]):not([data-testid^="sidebar-status-group-show-more-"])';
 const WORKSPACE_ROW = '[data-testid^="sidebar-workspace-row-"]';
 const WORKSPACE_SCROLL = '[data-testid="sidebar-project-workspace-list-scroll"], [data-testid="sidebar-status-list-scroll"]';
+const WORKSPACE_SECTION = '[data-testid^="sidebar-workspace-list-"], [data-testid="sidebar-pinned-list"], [data-testid^="sidebar-status-group-rows-"]';
 const WORKSPACE_ANCHOR = WORKSPACE_ROW + ', ' + PROJECT + ', ' + STATUS + ', [data-testid="sidebar-pinned-section-header"], [data-testid*="sidebar-"][data-testid*="show-more"]';
 const PREF_KEY = 'paseo-native-polish:preferences:v1';
 const EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
@@ -217,7 +218,7 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  document.body.setAttribute("data-native-polish", "0.4.2");
+  document.body.setAttribute("data-native-polish", "0.4.3");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -229,7 +230,7 @@ export function installMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.2', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.3', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -407,8 +408,11 @@ export function installMotion(): () => void {
   // text is compared, and message DOM is never cloned.
   interface TabState { chip: Element; shot: Snapshot; left: number }
   let tabRows = new Map<Element, Map<string, TabState>>();
-  interface WorkspaceAnchor { shot: Snapshot; top: number }
-  interface WorkspaceList { keys: Set<string>; anchors: Map<string, WorkspaceAnchor>; expanded: Map<string, string | null> }
+  interface WorkspaceAnchor { shot: Snapshot; top: number; left: number; project: string | null }
+  interface WorkspaceList {
+    keys: Set<string>; anchorKeys: Set<string>; sections: Map<string, string | null>; projectKeys: Set<string>;
+    projects: Map<string, Snapshot>; anchors: Map<string, WorkspaceAnchor>; expanded: Map<string, string | null>;
+  }
   let workspaceLists = new Map<Element, WorkspaceList>();
   interface FloatingSnapshot extends Snapshot { opacity: number }
   let floating = new Map<Element, FloatingSnapshot>();
@@ -488,41 +492,109 @@ export function installMotion(): () => void {
       // workspace creation/archive. Only visible content is copied/measured.
       const rows = all(scroll, WORKSPACE_ROW).filter(el => !el.closest('[data-native-polish-ghost]'));
       const keys = new Set(rows.map(el => el.getAttribute('data-testid')!));
+      const sections = new Map(rows.map(el => [el.getAttribute('data-testid')!, el.closest(WORKSPACE_SECTION)?.getAttribute('data-testid') ?? null]));
+      const headers = all(scroll, PROJECT).filter(el => !el.closest('[data-native-polish-ghost]'));
+      const projectKeys = new Set(headers.map(el => el.getAttribute('data-testid')!));
+      const elements = all(scroll, WORKSPACE_ANCHOR).filter(el => !el.closest('[data-native-polish-ghost]'));
+      const anchorKeys = new Set(elements.map(el => el.getAttribute('data-testid')!));
+      const expanded = new Map(all(scroll, '[aria-expanded][data-testid]').filter(el => !el.closest('[data-native-polish-ghost]')).map(el => [el.getAttribute('data-testid')!, el.getAttribute('aria-expanded')]));
+      const toggled = old && Array.from(expanded).some(([key, value]) => old.expanded.has(key) && old.expanded.get(key) !== value);
+      const sameOrder = (a: Set<string>, b: Set<string>) => {
+        const previous = Array.from(b);
+        return a.size === b.size && Array.from(a).every((key, index) => key === previous[index]);
+      };
+      const changed = old && (!sameOrder(anchorKeys, old.anchorKeys)
+        || Array.from(sections).some(([key, section]) => old.sections.has(key) && old.sections.get(key) !== section));
+      const allowed = allow && getPreferences().sidebars && old && !toggled && Date.now() >= Math.max(quietUntil, workspaceQuietUntil)
+        && !panelEntries.size && !panelExits.size && !hasAncestor(scroll, active.keys())
+        && pending?.disclosure?.element.closest(WORKSPACE_SCROLL) !== scroll;
+      // A second real list commit may interrupt a transition. Start from its
+      // current visual position, then measure the clean destination layout.
+      // Animation-generated mutations alone never restart row movement.
+      if (allowed && changed) {
+        for (const item of old.anchors.values()) if (active.has(item.shot.element)) {
+          if (item.shot.element.isConnected) {
+            // The host has already moved the layout slot. Read just our
+            // animated translation against the previous committed position.
+            const matrix = /^matrix(?:3d)?\(([^)]+)\)$/.exec(window.getComputedStyle(item.shot.element).getPropertyValue('transform'));
+            const values = matrix?.[1].split(',').map(Number);
+            if (values && (values.length === 6 || values.length === 16)) {
+              const dx = values[values.length === 16 ? 12 : 4];
+              const dy = values[values.length === 16 ? 13 : 5];
+              if (Number.isFinite(dx) && Number.isFinite(dy)) { item.top += dy; item.left += dx; }
+            }
+          }
+          active.get(item.shot.element)?.();
+        }
+      }
+      const projects = new Map<string, Snapshot>();
+      for (const header of headers) {
+        const key = header.getAttribute('data-testid')!;
+        const group = header.closest('[role="group"]');
+        if (!group || projects.size >= 30 || !visible(group)) continue;
+        const box = rect(group);
+        // Large/partially clipped groups use their visible row/header owners.
+        // Never copy an entire offscreen workspace list for a project exit.
+        if (box.top < bounds.top || box.bottom > bounds.bottom) continue;
+        const previous = old?.projects.get(key);
+        projects.set(key, active.has(group) && previous ? previous : snapshot(group));
+      }
       const anchors = new Map<string, WorkspaceAnchor>();
-      for (const el of all(scroll, WORKSPACE_ANCHOR).filter(el => !el.closest('[data-native-polish-ghost]'))) {
+      for (const el of elements) {
         const box = rect(el);
         if (!visible(el) || box.bottom <= bounds.top || box.top >= bounds.bottom || anchors.size >= 120) continue;
         const key = el.getAttribute('data-testid')!;
         const previous = old?.anchors.get(key);
         const moving = active.has(el) || hasAncestor(el, active.keys());
-        anchors.set(key, moving && previous ? previous : { shot: snapshot(el), top: box.top - bounds.top + scroll.scrollTop });
+        const group = el.closest('[role="group"]');
+        const project = group?.querySelector(PROJECT)?.getAttribute('data-testid') ?? null;
+        anchors.set(key, moving && previous ? previous : {
+          shot: snapshot(el), top: box.top - bounds.top + scroll.scrollTop,
+          left: box.left - bounds.left + scroll.scrollLeft, project,
+        });
       }
-      const expanded = new Map(all(scroll, '[aria-expanded][data-testid]').filter(el => !el.closest('[data-native-polish-ghost]')).map(el => [el.getAttribute('data-testid')!, el.getAttribute('aria-expanded')]));
-      const toggled = old && Array.from(expanded).some(([key, value]) => old.expanded.has(key) && old.expanded.get(key) !== value);
-      nextLists.set(scroll, { keys, anchors, expanded });
+      nextLists.set(scroll, { keys, anchorKeys, sections, projectKeys, projects, anchors, expanded });
       // Section expansion and sidebar width already have animation owners.
       // Rebase their rows without adding another entrance/exit underneath.
-      if (!allow || !getPreferences().sidebars || !old || toggled || Date.now() < Math.max(quietUntil, workspaceQuietUntil)
-        || panelEntries.size || panelExits.size || hasAncestor(scroll, active.keys())
-        || pending?.disclosure?.element.closest(WORKSPACE_SCROLL) === scroll) continue;
+      if (!allowed || !changed) continue;
       const removed = Array.from(old.keys).filter(key => !keys.has(key));
       const added = Array.from(keys).filter(key => !old.keys.has(key));
-      if (!removed.length && !added.length) continue;
-      for (const key of removed) {
-        const before = old.anchors.get(key)?.shot;
+      const exitingProjects = new Set<string>();
+      for (const [key, before] of old.projects) if (!projectKeys.has(key)) {
+        // A project can disappear from the unpinned list while its workspace
+        // moves to Pinned. Keep that workspace under the row's motion owner.
+        const migrated = all(before.copy, WORKSPACE_ROW).some(el => keys.has(el.getAttribute('data-testid')!));
+        if (!migrated && before.box.top >= bounds.top && before.box.bottom <= bounds.bottom) {
+          ghost(before, -6); exitingProjects.add(key);
+        }
+      }
+      for (const [key, after] of projects) if (!old.projectKeys.has(key)) {
+        const migrated = all(after.element, WORKSPACE_ROW).some(el => old.keys.has(el.getAttribute('data-testid')!));
+        if (!migrated && !active.has(after.element) && !hasAncestor(after.element, active.keys())) {
+          animate(after.element, [{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'translateY(0)' }]);
+        }
+      }
+      for (const [key, item] of old.anchors) {
+        if (anchorKeys.has(key) || (item.project && exitingProjects.has(item.project))) continue;
+        // Only actual removals, including headers, exit. Offscreen movement
+        // does not count as removal from the mounted sidebar list.
+        if (!removed.includes(key) && !item.shot.element.matches(PROJECT + ', ' + STATUS + ', [data-testid="sidebar-pinned-section-header"]')) continue;
+        if (item.shot.element.isConnected && scroll === item.shot.element.closest(WORKSPACE_SCROLL)) continue;
+        const before = item.shot;
         // A partially clipped row should never escape the sidebar viewport.
         if (before && before.box.top >= bounds.top && before.box.bottom <= bounds.bottom) ghost(before, -6);
       }
       for (const [key, item] of anchors) {
         const el = item.shot.element;
         if (active.has(el) || hasAncestor(el, active.keys()) || el.style.getPropertyValue('transform')) continue;
-        if (added.includes(key)) {
+        if (added.includes(key) || !old.anchorKeys.has(key)) {
           animate(el, [{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'translateY(0)' }]);
         } else {
           const previous = old.anchors.get(key);
           if (!previous) continue;
           const dy = previous.top - item.top;
-          if (Math.abs(dy) > 1) animate(el, [{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }]);
+          const dx = previous.left - item.left;
+          if (Math.abs(dy) > 1 || Math.abs(dx) > 1) animate(el, [{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'translate(0,0)' }]);
         }
       }
     }
@@ -768,7 +840,9 @@ export function installMotion(): () => void {
     }
     const target = elementOf(event.target);
     if (target?.closest('[data-native-polish-ghost]')) return;
-    if (target && (disclosureFor(target)?.closest(WORKSPACE_SCROLL) || target.closest('[data-testid*="sidebar-"][data-testid*="show-more"]'))) workspaceQuietUntil = Date.now() + 900;
+    if (target && (disclosureFor(target)?.closest(WORKSPACE_SCROLL) || target.closest(
+      '[data-testid*="sidebar-"][data-testid*="show-more"], [data-testid^="sidebar-project-filter-"], [data-testid^="sidebar-host-filter-"], [data-testid^="sidebar-label-filter-"], [data-testid^="sidebar-grouping-"]'
+    ))) workspaceQuietUntil = Date.now() + 900;
     // Finish interrupted motion before measuring the next layout. No delayed
     // input handlers: the host receives the original click/key immediately.
     stopAll();
