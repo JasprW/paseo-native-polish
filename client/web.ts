@@ -55,7 +55,7 @@ declare const window: {
   addEventListener(type: string, callback: Listener): void;
   removeEventListener(type: string, callback: Listener): void;
 };
-interface Mutation { type: string; target: Element; attributeName: string | null }
+interface Mutation { type: string; target: Element; attributeName: string | null; addedNodes: ArrayLike<Element>; removedNodes: ArrayLike<Element> }
 declare const MutationObserver: new (callback: (records: Mutation[]) => void) => { observe(target: Element, options: { subtree: boolean; childList: boolean; attributes: boolean; attributeFilter: string[] }): void; disconnect(): void };
 
 const TOOL = '[data-testid="tool-call-badge"], [data-testid="tool-call-group"]';
@@ -219,7 +219,7 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  document.body.setAttribute("data-native-polish", "0.4.5");
+  document.body.setAttribute("data-native-polish", "0.4.6");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -231,7 +231,7 @@ export function installMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.5', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.6', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -420,16 +420,21 @@ export function installMotion(): () => void {
   let paneBaseline = paneBoxes();
   let paneTransition: Map<string, PaneBox> | null = null;
   let paneTransitionUntil = 0;
-  let iconStates = new Map<Element, string>();
+  let fileIcons = new Map<Element, string>();
+  let toolIcons = new Map<Element, string>();
   let toolStates = new Map<Element, boolean>();
   let agentStates = new Map<Element, string>();
   const tabSettling = new WeakMap<Element, number>();
   const chats = new WeakMap<Element, { seen: Set<string>; pending: Set<string>; running: boolean }>();
   const decorations = new Map<Element, () => void>();
+  type Region = 'controls' | 'workspaces' | 'tabs' | 'floating' | 'panes' | 'agents' | 'files' | 'tools' | 'messages' | 'elastic';
+  const regions: Region[] = ['controls', 'workspaces', 'tabs', 'floating', 'panes', 'agents', 'files', 'tools', 'messages', 'elastic'];
+  const dirty = new Set<Region>();
+  let scrollDeadline = 0;
   const elastic = installElasticScroll({
     enabled: () => canAnimate() && getPreferences().elasticScroll,
     quick: () => getPreferences().pace === 'quick',
-    onRest: () => { quietUntil = Math.max(quietUntil, Date.now() + 350); scheduleAmbient(); },
+    onRest: () => { quietUntil = Math.max(quietUntil, Date.now() + 350); scheduleAmbient(['workspaces', 'tabs', 'messages']); },
   });
   const stylesheet = document.createElement('style');
   stylesheet.setAttribute('data-native-polish-style', '');
@@ -693,9 +698,7 @@ export function installMotion(): () => void {
   function iconSignature(slot: Element): string {
     return all(slot, 'svg,path,circle,polyline,line,rect').slice(0, 16).map(el => ['d', 'points', 'cx', 'cy', 'r', 'x1', 'y1', 'x2', 'y2', 'stroke', 'fill'].map(key => el.getAttribute(key) ?? '').join(':')).join('|') || 'loading';
   }
-  function updateStates(allow: boolean) {
-    const nextIcons = new Map<Element, string>();
-    const nextTools = new Map<Element, boolean>();
+  function updateAgentStates(allow: boolean) {
     const nextAgents = new Map<Element, string>();
     for (const agent of live('[data-status-bucket]').slice(0, 100)) {
       const state = agent.getAttribute('data-status-bucket')!;
@@ -703,12 +706,29 @@ export function installMotion(): () => void {
       const icon = firstBoxChild(agent);
       if (allow && getPreferences().states && agentStates.has(agent) && agentStates.get(agent) !== state && icon && !active.has(icon)) animate(icon, [{ opacity: .25, scale: .9 }, { opacity: 1, scale: 1 }], undefined, 0, 150);
     }
+    agentStates = nextAgents;
+  }
+  function updateIcons(slots: Element[], old: Map<Element, string>, allow: boolean) {
+    const next = new Map<Element, string>();
+    for (const slot of slots) {
+      const signature = iconSignature(slot);
+      next.set(slot, signature);
+      if (allow && getPreferences().states && old.has(slot) && old.get(slot) !== signature && !active.has(slot)) animate(slot, [{ opacity: .2, scale: .9 }, { opacity: 1, scale: 1 }], undefined, 0, 150);
+    }
+    return next;
+  }
+  function updateFileStates(allow: boolean) {
     const slots: Element[] = [];
     for (const row of live(FILE_ROW + ', ' + CHANGE_ROW).slice(0, 150)) {
       const info = firstBoxChild(row);
       const slot = info ? firstBoxChild(info) : null;
       if (slot && rect(slot).width <= 32) slots.push(slot);
     }
+    fileIcons = updateIcons(slots, fileIcons, allow);
+  }
+  function updateToolStates(allow: boolean) {
+    const nextTools = new Map<Element, boolean>();
+    const slots: Element[] = [];
     for (const tool of live(TOOL).slice(0, 80)) {
       const header = firstBoxChild(tool);
       if (!header) continue;
@@ -719,12 +739,8 @@ export function installMotion(): () => void {
       const slot = row ? firstBoxChild(row) : null;
       if (slot && !Array.from(slot.querySelectorAll('svg')).some(chevron)) slots.push(slot);
     }
-    for (const slot of slots) {
-      const signature = iconSignature(slot);
-      nextIcons.set(slot, signature);
-      if (allow && getPreferences().states && iconStates.has(slot) && iconStates.get(slot) !== signature && !active.has(slot)) animate(slot, [{ opacity: .2, scale: .9 }, { opacity: 1, scale: 1 }], undefined, 0, 150);
-    }
-    iconStates = nextIcons; toolStates = nextTools; agentStates = nextAgents;
+    toolIcons = updateIcons(slots, toolIcons, allow);
+    toolStates = nextTools;
   }
   function updateMessages(allow: boolean) {
     for (const chat of live(CHAT)) {
@@ -757,16 +773,31 @@ export function installMotion(): () => void {
       chats.set(chat, { seen, pending: candidates, running });
     }
   }
-  function refreshAmbient(allow = canAnimate()) {
-    elastic.refresh();
+  function refreshAmbient(allow = canAnimate(), selected: ReadonlySet<Region> = new Set(regions)) {
+    if (selected.has('elastic')) elastic.refresh();
     allow = allow && !elastic.isActive();
-    decorateControls();
-    updateWorkspaceRows(allow); updateTabs(allow); updateFloating(allow); updatePaneLayout(allow);
-    updateStates(allow); updateMessages(allow);
+    if (selected.has('controls')) decorateControls();
+    if (selected.has('workspaces')) updateWorkspaceRows(allow);
+    if (selected.has('tabs')) updateTabs(allow);
+    if (selected.has('floating')) updateFloating(allow);
+    if (selected.has('panes')) updatePaneLayout(allow);
+    if (selected.has('agents')) updateAgentStates(allow);
+    if (selected.has('files')) updateFileStates(allow);
+    if (selected.has('tools')) updateToolStates(allow);
+    if (selected.has('messages')) updateMessages(allow);
   }
-  function scheduleAmbient() {
-    if (disposed || passiveFrame) return;
-    passiveFrame = window.requestAnimationFrame(() => { passiveFrame = 0; if (!disposed) refreshAmbient(); });
+  function scheduleAmbient(selected: Region[] = regions) {
+    if (disposed) return;
+    for (const region of selected) dirty.add(region);
+    if (passiveFrame) return;
+    passiveFrame = window.requestAnimationFrame(() => {
+      passiveFrame = 0;
+      const selected = new Set(dirty); dirty.clear();
+      // Virtualized membership can change during scrolling. The idle callback
+      // rebases it once; those commits are not workspace creation/removal.
+      if (scrollDeadline) selected.delete('workspaces');
+      if (!disposed) refreshAmbient(canAnimate(), selected);
+    });
   }
   updateMotionFlags();
   refreshAmbient(false);
@@ -827,16 +858,35 @@ export function installMotion(): () => void {
   };
   const schedule = () => { if (pending && canAnimate() && !frame) frame = window.requestAnimationFrame(flush); };
   const observer = new MutationObserver(records => {
-    schedule();
-    // Host spinners update a transform every frame. Those leaf style writes
-    // must not scan/clone tabs or re-measure the entire workspace continuously.
-    if (records.some(record => {
+    for (const record of records) {
       const target = elementOf(record.target);
-      if (!target || target.closest('[data-native-polish-ghost]')) return false;
-      if (record.type === 'childList' || record.attributeName === 'data-status-bucket') return true;
-      if (target.matches(TAB)) return true;
-      return target.matches(FLOATING + ', ' + PANE) || Boolean(target.querySelector(PANE));
-    })) scheduleAmbient();
+      if (!target || target.closest('[data-native-polish-ghost]')) continue;
+      const structural = record.type === 'childList';
+      if (structural) {
+        const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
+        if (nodes.length && nodes.every(node => node.nodeType === 1 && node.getAttribute('data-native-polish-ghost') !== null)) continue;
+      }
+      // Offset/clip/translate writes belong solely to the elastic adapter.
+      // Host spinner leaf styles likewise do not invalidate whole layouts.
+      if (record.attributeName === 'style' && target.closest('[data-native-polish-elastic]')) continue;
+      if (record.attributeName === 'data-status-bucket') { scheduleAmbient(['agents']); continue; }
+      if (structural || record.attributeName === 'aria-expanded' || target.matches(PANE) || target.querySelector(PANE)) schedule();
+      const meaningful = structural || ['aria-expanded', 'aria-selected', 'aria-busy'].includes(record.attributeName ?? '');
+      if (target.closest(CHAT)) {
+        if (meaningful) scheduleAmbient(['tools', 'messages']);
+      } else if (target.closest(WORKSPACE_SCROLL)) {
+        if (meaningful) scheduleAmbient(['workspaces', 'agents', 'controls']);
+      } else if (target.closest(FILE_TREE + ', ' + CHANGE_TREE)) {
+        if (meaningful) scheduleAmbient(['files', 'controls']);
+      } else if (target.closest(TAB_ROW)) {
+        if (meaningful || target.matches(TAB)) scheduleAmbient(['tabs', 'agents', 'controls']);
+      } else if (target.closest(FLOATING)) {
+        if (meaningful || target.matches(FLOATING)) scheduleAmbient(['floating', 'controls']);
+      } else if (structural || target.matches(PANE) || target.querySelector(PANE)) {
+        // Shell commits may mount/remove any surface, including portal menus.
+        scheduleAmbient();
+      }
+    }
   });
   observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'class', 'aria-hidden', 'aria-expanded', 'aria-selected', 'aria-busy', 'data-status-bucket'] });
   const begin = (event: Event) => {
@@ -863,7 +913,17 @@ export function installMotion(): () => void {
     deadline = window.setTimeout(() => { pending = null; treeTarget = null; }, 900);
     schedule();
   };
-  const onScroll: Listener = () => { quietUntil = Date.now() + 350; pending = null; treeTarget = null; stopAll(); scheduleAmbient(); };
+  const onScroll: Listener = () => {
+    quietUntil = Date.now() + 350; pending = null; treeTarget = null;
+    if (active.size || ghosts.size) stopAll();
+    window.clearTimeout(scrollDeadline);
+    // Rebase once after a burst, never clone workspace/project snapshots on
+    // every wheel event.
+    scrollDeadline = window.setTimeout(() => {
+      scrollDeadline = 0;
+      if (!disposed) refreshAmbient(false, new Set<Region>(['workspaces', 'tabs', 'messages']));
+    }, 160);
+  };
   const onPointerMove: Listener = event => {
     if (!pointerOrigin || event.buttons !== 1) return;
     if (Math.abs((event.clientX ?? pointerOrigin.x) - pointerOrigin.x) + Math.abs((event.clientY ?? pointerOrigin.y) - pointerOrigin.y) < 6) return;
@@ -913,7 +973,8 @@ export function installMotion(): () => void {
     document.removeEventListener('wheel', onScroll, true);
     reduceMotion.removeEventListener('change', onReduce);
     window.clearTimeout(deadline); window.cancelAnimationFrame(frame); window.cancelAnimationFrame(passiveFrame);
-    workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); iconStates.clear(); toolStates.clear(); agentStates.clear();
+    window.clearTimeout(scrollDeadline); dirty.clear();
+    workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); fileIcons.clear(); toolIcons.clear(); toolStates.clear(); agentStates.clear();
     pending = null; treeTarget = null; stopAll();
   };
 }

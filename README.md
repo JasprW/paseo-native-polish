@@ -20,9 +20,11 @@ Workspace rows also move smoothly when pinned, unpinned or moved between status 
 
 Each motion category can be switched off. Choose **Gentle** (220 ms) or **Quick** (150 ms). System **Reduce Motion** disables added animations; shorter feedback uses its own timings.
 
-**Elastic scrolling** has its own switch. Supported macOS/iOS browsers use their platform rebound. The Electron/other-browser fallback follows vertical wheel/trackpad and single-finger touch input directly, with viewport-dependent resistance and a fast return after release. Decaying wheel momentum does not keep stretching the list. Horizontal scrolling, pinch zoom and nested code/detail scrollers retain their behavior. Quick speeds up only the fallback return. Native mobile clients keep their existing scrolling.
+**Elastic scrolling** has its own switch. Supported macOS/iOS browsers use their platform rebound. The Electron/other-browser fallback follows vertical wheel/trackpad and single-finger touch input directly, with viewport-dependent resistance and a fast return after release. Once return begins, the same wheel gesture cannot restart it, even when its momentum tail fluctuates. A fling gets one edge collision; a quiet gap or direction change allows a new pull. Horizontal scrolling, pinch zoom and nested code/detail scrollers retain their behavior. Quick speeds up only the fallback return. Native mobile clients keep their existing scrolling.
 
 The desktop fallback is an approximation: Paseo's Electron window does not currently enable `scrollBounce`, and a client plugin cannot change that main-process option. Exact macOS rebound requires host support.
+
+Streaming updates are coalesced by surface; wheel bursts rebase list snapshots after input settles.
 
 ## Install
 

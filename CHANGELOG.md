@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.6 · 2026-10-11
+
+- Latch wheel release for the entire gesture: momentum fluctuations and short tail gaps cannot repeatedly restart the rebound. A quiet gap or direction change starts a new gesture.
+- Allow one edge collision during a fling, then keep the return independent of its remaining wheel events. Cancelling feedback on content/layout changes also closes that gesture.
+- Coalesce ambient work by surface. Chat streaming refreshes tool/message state without cloning workspace/project snapshots or measuring pane/tab layouts.
+- Ignore adapter-owned elastic style writes and ghost-only mutations. Rebase workspace/tab/message snapshots after a wheel burst instead of on every wheel event.
+
 ## 0.4.5 · 2026-10-11
 
 - Make elastic pull respond directly to input, removing spring-follow lag and the 80 ms release hold.

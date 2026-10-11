@@ -41,15 +41,22 @@ const SURFACES = '[data-testid="agent-chat-scroll"], [data-testid="sidebar-proje
 const MARKER = 'data-native-polish-elastic';
 const OFFSET = '--native-polish-elastic-offset';
 const COEFFICIENT = .55;
+// Wheel events have no platform phase information. Keep a release terminal
+// until a quiet gap or direction change starts a distinct gesture.
+interface WheelGesture {
+  time: number; magnitude: number; peak: number; decays: number;
+  momentum: boolean; released: boolean; collided: boolean; direction: number;
+}
 interface Spring {
   scroll: Element; content: Element; pull: number; position: number; velocity: number;
   lastInput: number; touching: boolean; top: number; height: number;
+  gesture?: WheelGesture;
   owners: Element[]; children: Element[]; translations: Map<Element, string>; restore(): void; written: string;
 }
 export function installElasticScroll(options: { enabled(): boolean; quick(): boolean; onRest(): void }) {
   const springs = new Map<Element, Spring>();
   const boundaries = new Map<Element, { value: string; priority: string; written: string }>();
-  const wheelGestures = new WeakMap<Element, { time: number; magnitude: number; peak: number; decays: number; momentum: boolean; direction: number; edge: boolean }>();
+  let wheelGestures = new WeakMap<Element, WheelGesture>();
   let frame = 0;
   let previousTime = 0;
   let disposed = false;
@@ -77,6 +84,7 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
     boundaries.delete(scroll);
   }
   function finish(state: Spring) {
+    if (state.gesture) state.gesture.released = true;
     state.restore();
     state.content.removeAttribute(MARKER);
     springs.delete(state.scroll);
@@ -86,6 +94,7 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
     touch = null;
     for (const state of Array.from(springs.values())) finish(state);
     window.cancelAnimationFrame(frame); frame = 0; previousTime = 0;
+    wheelGestures = new WeakMap();
   }
   function refresh() {
     if (!supported || !options.enabled()) {
@@ -152,8 +161,9 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
         || state.owners.some(el => !el.isConnected || el.style.getPropertyValue('translate') !== state.translations.get(el))) { finish(state); continue; }
       // Pulling is direct manipulation, with no easing/lag. Only release runs
       // the spring; it is critically damped, so it returns without wobbling.
-      const held = state.touching || now - state.lastInput < 24;
+      const held = state.touching || (!state.gesture?.released && now - state.lastInput < 40);
       if (held) continue;
+      if (state.gesture) state.gesture.released = true;
       const frequency = options.quick() ? 32 : 28;
       const stiffness = frequency * frequency;
       const damping = 2 * frequency;
@@ -170,7 +180,7 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
     if (springs.size) frame = window.requestAnimationFrame(tick);
     else previousTime = 0;
   }
-  function pull(scroll: Element, delta: number, touching: boolean) {
+  function pull(scroll: Element, delta: number, touching: boolean, gesture?: WheelGesture) {
     const max = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
     const outward = (delta < 0 && scroll.scrollTop <= 1) || (delta > 0 && scroll.scrollTop >= max - 1);
     const current = springs.get(scroll);
@@ -220,6 +230,7 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
     const distance = Math.abs(state.pull);
     state.position = Math.sign(state.pull) * COEFFICIENT * distance * extent / (extent + COEFFICIENT * distance);
     state.velocity = 0;
+    state.gesture = gesture;
     state.written = `${state.position.toFixed(3)}px`;
     state.content.style.setProperty(OFFSET, state.written);
     state.lastInput = Date.now(); state.touching = touching;
@@ -235,20 +246,33 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
     const direction = Math.sign(delta);
     const now = Date.now();
     const previous = wheelGestures.get(scroll);
-    const same = previous && now - previous.time < 100 && direction === previous.direction;
-    const decays = same && magnitude < previous.magnitude * .98 ? previous.decays + 1 : 0;
-    const peak = same ? Math.max(previous.peak, magnitude) : magnitude;
-    // DOM wheel events omit macOS momentum phases. A sustained decaying tail
-    // is treated as release, rather than repeatedly stretching the content.
-    const renewed = same && magnitude > previous.magnitude * 1.25 + 1;
-    const momentum = same && !renewed && (previous.momentum || (decays >= 3 && magnitude < peak * .65));
+    if (!direction) return;
+    const same = previous && now - previous.time < 240 && direction === previous.direction;
+    const gesture: WheelGesture = same ? previous : {
+      time: now, magnitude, peak: magnitude, decays: 0,
+      momentum: false, released: false, collided: false, direction,
+    };
+    gesture.decays = same && magnitude < gesture.magnitude * .98 ? gesture.decays + 1 : 0;
+    gesture.peak = Math.max(gesture.peak, magnitude);
+    gesture.magnitude = magnitude;
+    gesture.time = now;
+    // Momentum and release are latched: an uneven tail cannot reopen them.
+    gesture.momentum ||= gesture.decays >= 3 && magnitude < gesture.peak * .65;
+    wheelGestures.set(scroll, gesture);
     const max = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
     const edge = (delta < 0 && scroll.scrollTop <= 1) || (delta > 0 && scroll.scrollTop >= max - 1);
-    wheelGestures.set(scroll, { time: now, magnitude, peak, decays, momentum: Boolean(momentum), direction, edge });
     // A fling may hit the edge during its momentum phase. Give that collision
     // one displacement, then let it return while the remaining tail passes.
-    if (momentum && (!edge || previous?.edge)) return;
-    pull(scroll, delta, false);
+    if (gesture.released) return;
+    if (gesture.momentum && (!edge || gesture.collided)) {
+      if (gesture.collided) gesture.released = true;
+      return;
+    }
+    pull(scroll, delta, false, gesture);
+    if (edge) {
+      gesture.collided = true;
+      if (gesture.momentum) gesture.released = true;
+    }
   };
   const touchStart: Listener = event => {
     reset();
