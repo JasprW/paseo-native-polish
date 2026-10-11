@@ -1,3 +1,4 @@
+import { hasNativeContextMenuHost } from "./web";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { SettingsCard, SettingsSection, SettingsSwitch, SettingsSelect } from "@getpaseo/plugin/client/ui";
 import { Platform, Text, View } from "react-native";
@@ -11,6 +12,18 @@ export function MotionSettings({ theme, layout }: PluginSurfaceProps) {
           ? "Responsive motion for Paseo. Changes apply immediately in this client. System Reduce Motion is always respected."
           : "This first version adds motion to the desktop and web client. Mobile keeps its existing native transitions."}
       </Text>
+      {Platform.OS === "web" ? (
+        <SettingsSection title="Experimental macOS integration">
+          <SettingsCard>
+            <SettingsSwitch label="Native workspace and file context menus" value={values.nativeMenus} onValueChange={(nativeMenus) => setPreferences({ ...values, nativeMenus })} />
+            <Text style={{ color: theme.colors.foregroundMuted, lineHeight: 21 }}>
+              {hasNativeContextMenuHost()
+                ? "Uses macOS menus. Labels and custom interactive pages keep the existing Paseo interface."
+                : "Requires the Native Menu Preview desktop client. Standard Paseo keeps its existing menus."}
+            </Text>
+          </SettingsCard>
+        </SettingsSection>
+      ) : null}
       <SettingsSection title="Motion">
         <SettingsCard>
           <SettingsSwitch label="Enable motion" value={values.enabled} onValueChange={(enabled) => setPreferences({ ...values, enabled })} />
