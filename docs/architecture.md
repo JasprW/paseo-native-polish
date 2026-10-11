@@ -16,6 +16,8 @@ Maximize/restore captures retain ownership for the full gesture, so the ambient 
 
 Menus preserve host-provided entrances where present. Exit copies have duplicate IDs and interactive media removed. They cannot receive focus or accessibility input. Newly appended message IDs fade once near the tail; initial history and virtualized remounts do not replay.
 
+Workspace sidebar membership uses stable workspace test IDs, including mounted rows outside the viewport. Only visible rows and section headers get bounded snapshots. Creation fades in; removal uses an inert exit copy and scroll-relative FLIP positions for surviving neighbors. Initial list mounts, section toggles and active parent/sidebar animations rebase without row motion. Project trailing creation buttons are excluded from disclosure capture. Workspace row motion shares the sidebar preference.
+
 ## Motion lifecycle
 
 Preferences use a small reactive store and client-local storage. Reduce Motion is observed live. Dragging, scrolling, preference changes and teardown cancel active animations. Cleanup removes temporary styles, inert copies, injected CSS, DOM markers, observers, timers and event listeners.

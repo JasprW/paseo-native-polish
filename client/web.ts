@@ -64,6 +64,9 @@ const CHANGE_TREE = '[data-testid="changes-file-tree"]';
 const CHANGE_ROW = '[data-testid^="diff-folder-"]:not([data-testid$="-toggle"]):not([data-testid$="-name"]):not([data-testid$="-stat"]), [data-testid^="diff-tree-file-"]:not([data-testid$="-name"])';
 const PROJECT = '[data-testid^="sidebar-project-row-"]';
 const STATUS = '[data-testid^="sidebar-status-group-"]:not([data-testid^="sidebar-status-group-rows-"]):not([data-testid^="sidebar-status-group-show-more-"])';
+const WORKSPACE_ROW = '[data-testid^="sidebar-workspace-row-"]';
+const WORKSPACE_SCROLL = '[data-testid="sidebar-project-workspace-list-scroll"], [data-testid="sidebar-status-list-scroll"]';
+const WORKSPACE_ANCHOR = WORKSPACE_ROW + ', ' + PROJECT + ', ' + STATUS + ', [data-testid="sidebar-pinned-section-header"], [data-testid*="sidebar-"][data-testid*="show-more"]';
 const PREF_KEY = 'paseo-native-polish:preferences:v1';
 const EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
 const all = (root: Element, selector: string) => Array.from(root.querySelectorAll(selector));
@@ -180,7 +183,7 @@ function disclosureFor(target: Element): Element | null {
     if (header && target.closest('[role="button"]') === header) return tool;
   }
   const project = target.closest(PROJECT);
-  if (project) return project.closest('[role="group"]');
+  if (project && target.closest('[role="button"]') === project) return project.closest('[role="group"]');
   const status = target.closest(STATUS);
   if (status) return status.parentElement?.parentElement ?? null;
   const expanded = target.closest('[role="button"][aria-expanded]');
@@ -214,7 +217,7 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  document.body.setAttribute("data-native-polish", "0.4.1");
+  document.body.setAttribute("data-native-polish", "0.4.2");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -226,7 +229,7 @@ export function installMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.1', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.2', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -234,6 +237,7 @@ export function installMotion(): () => void {
   let layoutPolling = 0;
   let passiveFrame = 0;
   let quietUntil = 0;
+  let workspaceQuietUntil = 0;
   let pointerOrigin: { x: number; y: number } | null = null;
   const panelExits = new Set<Element>();
   const panelEntries = new Set<Element>();
@@ -403,6 +407,9 @@ export function installMotion(): () => void {
   // text is compared, and message DOM is never cloned.
   interface TabState { chip: Element; shot: Snapshot; left: number }
   let tabRows = new Map<Element, Map<string, TabState>>();
+  interface WorkspaceAnchor { shot: Snapshot; top: number }
+  interface WorkspaceList { keys: Set<string>; anchors: Map<string, WorkspaceAnchor>; expanded: Map<string, string | null> }
+  let workspaceLists = new Map<Element, WorkspaceList>();
   interface FloatingSnapshot extends Snapshot { opacity: number }
   let floating = new Map<Element, FloatingSnapshot>();
   let paneBaseline = paneBoxes();
@@ -471,6 +478,55 @@ export function installMotion(): () => void {
     before.parent.insertBefore(copy, before.next?.parentElement === before.parent ? before.next : null);
     ghosts.add(copy);
     animate(copy, [{ width: `${r.width}px`, opacity: 1 }, { width: '0px', opacity: 0 }], () => { copy.remove(); ghosts.delete(copy); }, 0, Math.round(duration() * .75));
+  }
+  function updateWorkspaceRows(allow: boolean) {
+    const nextLists = new Map<Element, WorkspaceList>();
+    for (const scroll of live(WORKSPACE_SCROLL)) {
+      const old = workspaceLists.get(scroll);
+      const bounds = rect(scroll);
+      // Membership includes offscreen rows, so scrolling cannot look like a
+      // workspace creation/archive. Only visible content is copied/measured.
+      const rows = all(scroll, WORKSPACE_ROW).filter(el => !el.closest('[data-native-polish-ghost]'));
+      const keys = new Set(rows.map(el => el.getAttribute('data-testid')!));
+      const anchors = new Map<string, WorkspaceAnchor>();
+      for (const el of all(scroll, WORKSPACE_ANCHOR).filter(el => !el.closest('[data-native-polish-ghost]'))) {
+        const box = rect(el);
+        if (!visible(el) || box.bottom <= bounds.top || box.top >= bounds.bottom || anchors.size >= 120) continue;
+        const key = el.getAttribute('data-testid')!;
+        const previous = old?.anchors.get(key);
+        const moving = active.has(el) || hasAncestor(el, active.keys());
+        anchors.set(key, moving && previous ? previous : { shot: snapshot(el), top: box.top - bounds.top + scroll.scrollTop });
+      }
+      const expanded = new Map(all(scroll, '[aria-expanded][data-testid]').filter(el => !el.closest('[data-native-polish-ghost]')).map(el => [el.getAttribute('data-testid')!, el.getAttribute('aria-expanded')]));
+      const toggled = old && Array.from(expanded).some(([key, value]) => old.expanded.has(key) && old.expanded.get(key) !== value);
+      nextLists.set(scroll, { keys, anchors, expanded });
+      // Section expansion and sidebar width already have animation owners.
+      // Rebase their rows without adding another entrance/exit underneath.
+      if (!allow || !getPreferences().sidebars || !old || toggled || Date.now() < Math.max(quietUntil, workspaceQuietUntil)
+        || panelEntries.size || panelExits.size || hasAncestor(scroll, active.keys())
+        || pending?.disclosure?.element.closest(WORKSPACE_SCROLL) === scroll) continue;
+      const removed = Array.from(old.keys).filter(key => !keys.has(key));
+      const added = Array.from(keys).filter(key => !old.keys.has(key));
+      if (!removed.length && !added.length) continue;
+      for (const key of removed) {
+        const before = old.anchors.get(key)?.shot;
+        // A partially clipped row should never escape the sidebar viewport.
+        if (before && before.box.top >= bounds.top && before.box.bottom <= bounds.bottom) ghost(before, -6);
+      }
+      for (const [key, item] of anchors) {
+        const el = item.shot.element;
+        if (active.has(el) || hasAncestor(el, active.keys()) || el.style.getPropertyValue('transform')) continue;
+        if (added.includes(key)) {
+          animate(el, [{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'translateY(0)' }]);
+        } else {
+          const previous = old.anchors.get(key);
+          if (!previous) continue;
+          const dy = previous.top - item.top;
+          if (Math.abs(dy) > 1) animate(el, [{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }]);
+        }
+      }
+    }
+    workspaceLists = nextLists;
   }
   function updateTabs(allow: boolean) {
     const nextRows = new Map<Element, Map<string, TabState>>();
@@ -625,7 +681,7 @@ export function installMotion(): () => void {
   }
   function refreshAmbient(allow = canAnimate()) {
     decorateControls();
-    updateTabs(allow); updateFloating(allow); updatePaneLayout(allow);
+    updateWorkspaceRows(allow); updateTabs(allow); updateFloating(allow); updatePaneLayout(allow);
     updateStates(allow); updateMessages(allow);
   }
   function scheduleAmbient() {
@@ -712,6 +768,7 @@ export function installMotion(): () => void {
     }
     const target = elementOf(event.target);
     if (target?.closest('[data-native-polish-ghost]')) return;
+    if (target && (disclosureFor(target)?.closest(WORKSPACE_SCROLL) || target.closest('[data-testid*="sidebar-"][data-testid*="show-more"]'))) workspaceQuietUntil = Date.now() + 900;
     // Finish interrupted motion before measuring the next layout. No delayed
     // input handlers: the host receives the original click/key immediately.
     stopAll();
@@ -773,7 +830,7 @@ export function installMotion(): () => void {
     document.removeEventListener('wheel', onScroll, true);
     reduceMotion.removeEventListener('change', onReduce);
     window.clearTimeout(deadline); window.cancelAnimationFrame(frame); window.cancelAnimationFrame(passiveFrame);
-    tabRows.clear(); floating.clear(); paneBaseline.clear(); iconStates.clear(); toolStates.clear(); agentStates.clear();
+    workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); iconStates.clear(); toolStates.clear(); agentStates.clear();
     pending = null; treeTarget = null; stopAll();
   };
 }

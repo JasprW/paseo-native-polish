@@ -8,7 +8,7 @@ Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures tra
 
 | Area | Behavior |
 | --- | --- |
-| Sidebars | Animate left sidebar and Explorer expansion/collapse, including adjacent pane resizing. |
+| Sidebars | Animate left sidebar and Explorer expansion/collapse, including adjacent pane resizing. Workspace rows fade in on creation and out on archive; neighboring rows move into place. |
 | Panes | Animate split, close, maximize and restore. |
 | Tabs | Animate opening, closing and reordering; transition selection colors. |
 | Explorer and timeline | Animate tree expansion/collapse, folder arrows, tool calls and thinking details. |

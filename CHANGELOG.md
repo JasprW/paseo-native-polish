@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 · 2026-10-11
+
+- Animate workspace row creation and archive removal, including neighboring rows and section headers moving into place.
+- Track stable workspace keys across offscreen rows and use scroll-relative positions for project/status sidebar lists.
+- Rebase on initial mount, section toggles, scrolling, dragging and active parent/sidebar animations to avoid duplicate row motion.
+- Keep project new-workspace buttons separate from section disclosure detection.
+
 ## 0.4.1 · 2026-10-11
 
 - Keep maximize/restore under one animation owner throughout the gesture, including hidden-pane commits.
