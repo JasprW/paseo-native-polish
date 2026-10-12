@@ -6,7 +6,7 @@ On desktop, hovering at a hidden sidebar's window edge temporarily opens the rea
 
 Workspace rows fade in when created and fade out when archived. Pinning, unpinning and status-group changes move the existing row smoothly. Project creation/removal animates the group and neighboring rows moving into place. This uses the sidebar motion setting and works in project and status grouping.
 
-Elastic scrolling adds a small damped rebound at the top and bottom of agent conversations, workspace lists, Files and Changes. It has a separate switch and responds to vertical wheel/trackpad and single-finger web touch input. Normal scrolling, horizontal gestures, pinch zoom and nested code/detail scrollers keep their behavior. Native clients retain their existing scrolling.
+Elastic scrolling adds a small damped rebound at the top and bottom of agent conversations, workspace lists, Files, Changes, Markdown previews and editable/read-only file Source views. It has a separate switch and responds to vertical wheel/trackpad and single-finger web touch input. Normal scrolling, horizontal gestures, pinch zoom and nested code/detail scrollers keep their behavior. Source content, line numbers and selection layers move together and restore before editing input. Sandboxed HTML previews are not yet covered; images keep their existing zoom/pan gestures. Native clients retain their existing scrolling.
 
 Supported macOS/iOS browsers use the platform rebound. The desktop fallback follows input directly and returns quickly after release; it approximates the effect because Paseo's Electron window does not expose native scroll bounce to a client plugin.
 

@@ -14,11 +14,13 @@
 - 文件树、文件夹箭头、工具调用和 thinking 展开／收起。
 - 菜单、弹层、按钮按压和 hover 反馈。
 - Agent 状态变化，以及对话尾部新消息的一次淡入。
-- Agent 对话、workspace、Files 和 Changes 列表的弹性滚动：到顶／到底后轻微拉动，再以阻尼弹簧回到原位。
+- Agent 对话、workspace、Files、Changes 列表、Markdown 文件预览和所有文本文件 Source 模式的弹性滚动：到顶／到底后轻微拉动，再以阻尼弹簧回到原位。
 
 各类动效可独立关闭；支持 Gentle（220 ms）和 Quick（150 ms）。遵循系统 Reduce Motion 设置。
 
 弹性滚动有独立的 **Elastic scrolling** 开关。支持的 macOS／iOS 浏览器直接沿用平台回弹；Electron 等环境使用近似效果：拉动实时跟手，阻力随视口大小和距离增加，结束后快速归位，快速甩动触边只回弹一次，惯性尾段的小幅波动不会反复拉开列表；已经到顶或到底时，重新施力或分次滚动仍可再次拉动，并从当前位移衔接。横向滚动、缩放和嵌套代码滚动区保留原有行为。Quick 只加快近似效果的归位；原生移动客户端沿用现有滚动。
+
+文件区域包括 Markdown 渲染预览，以及 Markdown、HTML、代码和纯文本等所有文本文件的 Source 模式，支持可编辑与只读视图。Source 回弹让正文、行号和选区一起移动，点击、按键及开始输入法输入时立即复位。HTML 渲染预览在独立 sandbox iframe 内，暂未覆盖；图片沿用原有缩放与拖动手势。
 
 桌面端仍是近似效果：Paseo 的 Electron 窗口尚未开启 `scrollBounce`，客户端插件无法修改这个主进程选项。完全一致的 macOS 回弹需要 Paseo 本身支持。
 

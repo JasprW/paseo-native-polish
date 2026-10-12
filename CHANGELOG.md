@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Animate sidebars toggled with Cmd/Ctrl+B and Cmd/Ctrl+E. Capture shortcuts on window capture, ahead of the host's propagation stop, and poll for the asynchronous layout commit.
+- Fix hover previews staying open after the pointer enters a sandboxed HTML preview. Clear cross-document coordinates on both frame entry events, handle null relatedTarget via host hit-testing and observe pointerleave on the real sidebar root.
+- Keep hover previews outside flex layout until the host dock is hidden/unmounted, then rebase through two layout frames before resuming ordinary motion. Prevent closing previews from triggering a canvas scale animation.
+- Use one DOM motion adapter per client window across connected hosts, prefer the newer version and hand ownership over on disconnect. Share motion preferences across host contributions.
+- Add boundary rebound to Markdown file previews using the existing elastic-scroll setting and gesture handling. Keep nested code/detail scrollers under their own control.
+- Cover editable and read-only Source views for all text file types, including Markdown, HTML, code and plain text. Translate CodeMirror's complete viewport inside its existing clipped host, keeping content, gutters and selection layers together without changing editor overflow or scroll metrics.
+- Reset rebound before pointer/keyboard input and IME composition; ignore wheel input while dragging. Discover editor scroll surfaces when CodeMirror mounts without scanning token/caret updates.
+
 ## 0.4.9 · 2026-10-11
 
 - Hover near either window edge to preview a hidden desktop sidebar over the canvas, without consuming its flex layout slot. Leave to restore the closed state.

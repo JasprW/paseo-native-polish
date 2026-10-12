@@ -7,6 +7,7 @@ interface Element {
   nodeType: number; parentElement: Element | null; nextElementSibling: Element | null; isConnected: boolean; style: Style; textContent: string | null;
   getAttribute(key: string): string | null; setAttribute(key: string, value: string): void; removeAttribute(key: string): void;
   matches(selector: string): boolean; closest(selector: string): Element | null; querySelector(selector: string): Element | null;
+  addEventListener(type: string, listener: Listener, capture?: boolean): void; removeEventListener(type: string, listener: Listener, capture?: boolean): void;
   getBoundingClientRect(): Rect; appendChild(child: Element): void; remove(): void; click?(): void;
 }
 interface Input { target: Element | null; relatedTarget?: Element | null; clientX?: number; clientY?: number; buttons?: number; pointerType?: string; key?: string; metaKey?: boolean; ctrlKey?: boolean; isComposing?: boolean }
@@ -15,12 +16,14 @@ interface Media { matches: boolean; addEventListener(type: string, listener: () 
 declare const document: {
   body: Element; head: Element; activeElement: Element | null; hidden: boolean; hasFocus(): boolean;
   createElement(tag: string): Element; querySelectorAll(selector: string): ArrayLike<Element>;
+  elementFromPoint(x: number, y: number): Element | null;
   addEventListener(type: string, listener: Listener, capture?: boolean): void; removeEventListener(type: string, listener: Listener, capture?: boolean): void;
 };
 declare const window: {
   innerWidth: number; innerHeight: number; matchMedia(query: string): Media;
+  requestAnimationFrame(callback: () => void): number; cancelAnimationFrame(id: number): void;
   setTimeout(callback: () => void, ms: number): number; clearTimeout(id: number): void;
-  addEventListener(type: string, listener: Listener): void; removeEventListener(type: string, listener: Listener): void;
+  addEventListener(type: string, listener: Listener, capture?: boolean): void; removeEventListener(type: string, listener: Listener, capture?: boolean): void;
 };
 interface Mutation { target: Element; addedNodes: ArrayLike<Element>; removedNodes: ArrayLike<Element> }
 declare const MutationObserver: new (callback: (records: Mutation[]) => void) => {
@@ -56,6 +59,8 @@ export function installEdgePeek(options: {
   let pointer: { x: number; y: number; buttons: number } | null = null;
   let candidate: Side | null = null;
   let enterTimer = 0, leaveTimer = 0, phaseTimer = 0, restoreTimer = 0, blurTimer = 0;
+  let restoreFrame = 0, settleFrame = 0;
+  let settling = false;
   let current: { side: Side; toggle: Element; root: Element | null; closing: boolean; restoring: boolean; activated: boolean } | null = null;
   const css = document.createElement('style');
   // The sibling selector applies during React's first mounting commit, before
@@ -111,7 +116,8 @@ export function installEdgePeek(options: {
   function refreshTriggers() {
     // Keep hover delivery possible when the focused frame changes. Opening
     // still checks document.hasFocus(), and never focuses a background window.
-    const ready = !disposed && options.enabled() && fine.matches && !document.hidden && !current &&
+    const ready = !disposed && options.enabled() && fine.matches && !document.hidden && !current && !settling &&
+      document.body.getAttribute(MARKER) === null &&
       Boolean(document.body.querySelector('[data-testid="left-sidebar-resize-handle"]')) && !floating();
     for (const { side, element } of triggers) {
       const active = ready && toggleFor(side)?.getAttribute('aria-expanded') === 'false';
@@ -130,41 +136,69 @@ export function installEdgePeek(options: {
     internalClick = true;
     try { toggle.click?.(); } finally { internalClick = false; }
   }
-  function cleanup() {
+  function cleanup(handoff = false) {
     window.clearTimeout(phaseTimer); phaseTimer = 0;
     window.clearTimeout(restoreTimer); restoreTimer = 0;
     window.clearTimeout(leaveTimer); leaveTimer = 0;
+    window.cancelAnimationFrame(restoreFrame); restoreFrame = 0;
+    window.cancelAnimationFrame(settleFrame); settleFrame = 0;
+    current?.root?.removeEventListener('pointerleave', onPanelLeave);
     current?.root?.removeAttribute(OWNER);
     current = null;
-    document.body.removeAttribute(MARKER); document.body.removeAttribute(PHASE);
-    document.body.style.removeProperty('--native-polish-peek-time');
-    refreshTriggers();
+    settling = !disposed && !handoff;
+    const finish = () => {
+      settling = false; settleFrame = 0;
+      document.body.removeAttribute(MARKER); document.body.removeAttribute(PHASE);
+      document.body.style.removeProperty('--native-polish-peek-time');
+      // Capture clean host geometry before any ordinary motion can resume.
+      options.onTransition(); refreshTriggers();
+    };
+    if (!settling) { finish(); return; }
+    document.body.setAttribute(PHASE, 'settling');
     options.onTransition();
+    // aria-expanded and the retained/unmounted dock can commit separately.
+    // Keep captures suppressed through the next layout/observer delivery.
+    settleFrame = window.requestAnimationFrame(() => {
+      options.onTransition();
+      settleFrame = window.requestAnimationFrame(finish);
+    });
   }
-  function restore() {
+  function awaitClosedLayout() {
+    if (!current?.restoring || restoreFrame) return;
+    restoreFrame = window.requestAnimationFrame(() => {
+      restoreFrame = 0;
+      if (!current?.restoring) return;
+      const root = current.root ?? (current.side === 'right' ? document.body.querySelector(RIGHT_HANDLE)?.nextElementSibling : null);
+      const closed = !current.toggle.isConnected || current.toggle.getAttribute('aria-expanded') === 'false';
+      if (closed && (!root || !visible(root))) cleanup();
+      else awaitClosedLayout();
+    });
+  }
+  function restore(handoff = false) {
     if (!current) return;
     current.restoring = true;
     // Use the original control only while it still belongs to this screen.
     // Never toggle a newly navigated workspace's independent visibility.
     if (current.toggle.isConnected && current.toggle.getAttribute('aria-expanded') === 'true') click(current.toggle);
-    if (current.toggle.getAttribute('aria-expanded') === 'false' || !current.toggle.isConnected) cleanup();
-    else restoreTimer = window.setTimeout(() => {
+    if (handoff) { cleanup(true); return; }
+    awaitClosedLayout();
+    restoreTimer = window.setTimeout(() => {
       // A failed host control must not leave a permanent injected overlay.
       console.warn('[Native Polish] sidebar preview did not restore promptly');
       cleanup();
     }, 700);
   }
-  function close(immediate = false) {
+  function close(immediate = false, handoff = false) {
     clearEnter(); window.clearTimeout(leaveTimer); leaveTimer = 0;
     if (!current) return;
-    if (current.restoring) return;
+    if (current.restoring) { if (handoff) cleanup(true); return; }
     if (current.closing && !immediate) return;
     current.closing = true;
     window.clearTimeout(phaseTimer);
     options.onTransition();
     document.body.setAttribute(PHASE, 'closing');
-    if (immediate || !options.motion()) restore();
-    else phaseTimer = window.setTimeout(restore, options.quick() ? 120 : 170);
+    if (immediate || !options.motion()) restore(handoff);
+    else phaseTimer = window.setTimeout(() => restore(), options.quick() ? 120 : 170);
   }
   function keepOpen() {
     if (!current || !current.root || current.closing) return false;
@@ -179,9 +213,24 @@ export function installEdgePeek(options: {
     if (keepOpen() || edge() === current.side) { window.clearTimeout(leaveTimer); leaveTimer = 0; return; }
     if (!leaveTimer) leaveTimer = window.setTimeout(() => { leaveTimer = 0; if (!keepOpen()) close(); }, LEAVE_DELAY);
   }
+  function enterFrame() {
+    // The frame's pointerover follows the parent's pointerout. Neither event
+    // may leave a last-known sidebar coordinate latched across documents.
+    pointer = null; clearEnter(); considerLeave();
+  }
+  function onPanelLeave(event: Input) {
+    if (!current || current.closing || (event.pointerType && event.pointerType !== 'mouse')) return;
+    // pointerleave on the real overlay is authoritative even when Chromium
+    // hides the relatedTarget at a sandboxed frame boundary. Later parent
+    // moves can still cancel the grace period if the pointer comes back.
+    if (event.buttons) {
+      pointer = { x: event.clientX ?? 0, y: event.clientY ?? 0, buttons: event.buttons };
+    } else pointer = null;
+    clearEnter(); considerLeave();
+  }
   function open(side: Side) {
     clearEnter();
-    if (!available() || current || floating() || edge() !== side) return;
+    if (!available() || current || settling || document.body.getAttribute(MARKER) !== null || floating() || edge() !== side) return;
     const toggle = toggleFor(side);
     if (!toggle || toggle.getAttribute('aria-expanded') !== 'false') return;
     const panels = options.panels();
@@ -189,6 +238,7 @@ export function installEdgePeek(options: {
     // This retained desktop-only handle is absent in compact/mobile layout.
     if (!left?.querySelector('[data-testid="left-sidebar-resize-handle"]')) return;
     current = { side, toggle, root: side === 'left' ? left : null, closing: false, restoring: false, activated: false };
+    current.root?.addEventListener('pointerleave', onPanelLeave);
     refreshTriggers();
     current.root?.setAttribute(OWNER, side);
     document.body.style.setProperty('--native-polish-peek-time', `${options.motion() ? (options.quick() ? 120 : 170) : 0}ms`);
@@ -206,6 +256,7 @@ export function installEdgePeek(options: {
   }
   const onMove: Listener = event => {
     if (event.pointerType && event.pointerType !== 'mouse') return;
+    if (event.target?.closest('iframe')) { enterFrame(); return; }
     if (event.clientX === undefined || event.clientY === undefined) return;
     pointer = { x: event.clientX, y: event.clientY, buttons: event.buttons ?? 0 };
     const side = edge();
@@ -225,22 +276,27 @@ export function installEdgePeek(options: {
     if (event.target?.closest(FLOATING)) return;
     // Close before a real toggle activation so that the user's subsequent
     // host click can open the regular dock, with its normal layout behavior.
-    if (!current.root || !inside(event.target, current.root) || inside(event.target, current.toggle)) close(true);
+    if (!current.root || !inside(event.target, current.root) || inside(event.target, current.toggle)) close(true, inside(event.target, current.toggle));
   };
   const onUp: Listener = () => { if (pointer) pointer.buttons = 0; considerLeave(); };
   const onKey: Listener = event => {
     if (event.isComposing) return;
     if (event.key === 'Escape') { blocked = current?.side ?? candidate; close(true); }
-    else if (current && (event.metaKey || event.ctrlKey) && ['b', 'e', '.'].includes(event.key?.toLowerCase() ?? '')) close(true);
+    else if (current && (event.metaKey || event.ctrlKey) && ['b', 'e', '.'].includes(event.key?.toLowerCase() ?? '')) close(true, true);
   };
   const onOut: Listener = event => {
     // The next moves will occur inside another document. Do not leave the
     // last sidebar coordinates latched until a parent event happens again.
     if (event.relatedTarget?.matches('iframe')) {
-      pointer = null; clearEnter(); considerLeave(); return;
+      enterFrame(); return;
     }
     if (event.relatedTarget) return;
-    if (event.clientX !== undefined && event.clientY !== undefined && event.clientX > 0 && event.clientX < window.innerWidth && event.clientY > 0 && event.clientY < window.innerHeight) return;
+    if (event.clientX !== undefined && event.clientY !== undefined && event.clientX > 0 && event.clientX < window.innerWidth && event.clientY > 0 && event.clientY < window.innerHeight) {
+      // A null relatedTarget also occurs when a DOM node disappears. Only
+      // classify it as crossing into a frame when the host hit-test agrees.
+      if (document.elementFromPoint(event.clientX, event.clientY)?.closest('iframe')) enterFrame();
+      return;
+    }
     pointer = null; clearEnter(); close();
   };
   const reset = () => { pointer = null; blocked = null; close(true); refreshTriggers(); };
@@ -264,12 +320,12 @@ export function installEdgePeek(options: {
           node.nodeType === 1 && (node.matches(controls) || node.querySelector(controls))))) refreshTriggers();
     if (!current) return;
     if (current.restoring) {
-      if (!current.toggle.isConnected || current.toggle.getAttribute('aria-expanded') === 'false') cleanup();
+      awaitClosedLayout();
       return;
     }
     if (!current.toggle.isConnected) { cleanup(); return; }
     if (current.toggle.getAttribute('aria-expanded') !== 'true') {
-      if (current.activated) cleanup();
+      if (current.activated) restore();
       return;
     }
     current.activated = true;
@@ -278,6 +334,7 @@ export function installEdgePeek(options: {
       const root = handle?.nextElementSibling;
       if (root?.querySelector('[data-testid="workspace-explorer-sidebar"]')) {
         current.root = root; root.setAttribute(OWNER, 'right');
+        root.addEventListener('pointerleave', onPanelLeave);
         considerLeave();
       }
     }
@@ -293,7 +350,7 @@ export function installEdgePeek(options: {
   document.addEventListener('pointerup', onUp, true);
   document.addEventListener('pointerleave', onOut);
   document.addEventListener('pointerout', onOut, true);
-  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('keydown', onKey, true);
   document.addEventListener('visibilitychange', reset);
   document.addEventListener('focusout', onUp, true);
   window.addEventListener('blur', onBlur);
@@ -301,7 +358,7 @@ export function installEdgePeek(options: {
   window.addEventListener('resize', reset);
   fine.addEventListener('change', reset);
   return {
-    isTransitioning: () => internalClick || Boolean(current && (current.closing || document.body.getAttribute(PHASE) === 'opening')),
+    isTransitioning: () => internalClick || settling || Boolean(current && (current.closing || document.body.getAttribute(PHASE) === 'opening')),
     refresh() { if (!available()) close(true); refreshTriggers(); },
     dispose() {
       disposed = true; close(true); cleanup(); clearEnter(); observer.disconnect(); css.remove();
@@ -312,7 +369,7 @@ export function installEdgePeek(options: {
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointerleave', onOut);
       document.removeEventListener('pointerout', onOut, true);
-      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('keydown', onKey, true);
       document.removeEventListener('visibilitychange', reset);
       document.removeEventListener('focusout', onUp, true);
       window.removeEventListener('blur', onBlur);

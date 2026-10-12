@@ -2,6 +2,7 @@ import { Platform } from "react-native";
 import { defaults, getPreferences, setPreferences, subscribePreferences } from "./preferences";
 import { installElasticScroll } from "./elastic-scroll";
 import { installEdgePeek } from "./edge-peek";
+import { leaseMotion } from "./motion-runtime";
 
 /* Desktop/Web adapter for Paseo 0.11.2. Host DOM is not a public plugin API.
  * Keep selectors here; native clients never touch these globals. No host events
@@ -23,6 +24,8 @@ interface Element {
   matches(selector: string): boolean;
   querySelector(selector: string): Element | null;
   querySelectorAll(selector: string): ArrayLike<Element>;
+  addEventListener(type: string, callback: Listener): void;
+  removeEventListener(type: string, callback: Listener): void;
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
@@ -55,8 +58,8 @@ declare const window: {
   setTimeout(callback: () => void, ms: number): number;
   clearTimeout(id: number): void;
   localStorage: { getItem(key: string): string | null; setItem(key: string, value: string): void };
-  addEventListener(type: string, callback: Listener): void;
-  removeEventListener(type: string, callback: Listener): void;
+  addEventListener(type: string, callback: Listener, capture?: boolean): void;
+  removeEventListener(type: string, callback: Listener, capture?: boolean): void;
 };
 interface Mutation { type: string; target: Element; attributeName: string | null; addedNodes: ArrayLike<Element>; removedNodes: ArrayLike<Element> }
 declare const MutationObserver: new (callback: (records: Mutation[]) => void) => { observe(target: Element, options: { subtree: boolean; childList: boolean; attributes: boolean; attributeFilter: string[] }): void; disconnect(): void };
@@ -229,7 +232,11 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  document.body.setAttribute("data-native-polish", "0.4.9");
+  return leaseMotion('0.4.10-dev.0', installWebMotion);
+}
+
+function installWebMotion(): () => void {
+  document.body.setAttribute("data-native-polish", "0.4.10-dev.0");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -241,7 +248,7 @@ export function installMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.9', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.10-dev.0', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -258,7 +265,7 @@ export function installMotion(): () => void {
   const active = new Map<Element, () => void>();
   const ghosts = new Set<Element>();
   let edgePeek: ReturnType<typeof installEdgePeek> | null = null;
-  const canAnimate = () => !disposed && !suspended && !edgePeek?.isTransitioning() && getPreferences().enabled && !reduceMotion.matches;
+  const canAnimate = () => !disposed && !suspended && document.body.getAttribute('data-native-polish-peek') === null && !edgePeek?.isTransitioning() && getPreferences().enabled && !reduceMotion.matches;
   const duration = () => getPreferences().pace === 'quick' ? 150 : 220;
 
   const stopAll = () => {
@@ -877,10 +884,13 @@ export function installMotion(): () => void {
     for (const record of records) {
       const target = elementOf(record.target);
       if (!target || target.closest('[data-native-polish-ghost],[data-native-polish-peek-trigger]')) continue;
-      // Editors own their selection, composition and internal render loop.
-      // Caret/token/terminal updates never invalidate app motion baselines.
-      if (target.closest(EDITING)) continue;
       const structural = record.type === 'childList';
+      // Discover an editor's scroll surface when CodeMirror mounts into its
+      // host. Token, selection and caret updates remain excluded from scans.
+      if (target.closest(EDITING)) {
+        if (structural && target.matches('[data-testid="file-source-editor"]')) scheduleAmbient(['elastic']);
+        continue;
+      }
       if (structural) {
         const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
         if (nodes.length && nodes.every(node => node.nodeType === 1 && (node.getAttribute('data-native-polish-ghost') !== null || node.getAttribute('data-native-polish-peek-trigger') !== null))) continue;
@@ -944,6 +954,8 @@ export function installMotion(): () => void {
     refreshAmbient(false);
     if (!event.key && event.clientX !== undefined && event.clientY !== undefined) pointerOrigin = { x: event.clientX, y: event.clientY };
     layoutPolling = 0;
+    // Shortcuts have no pointerup/click commit; poll for the async commit.
+    if (event.key && (event.metaKey || event.ctrlKey)) layoutPolling = 12;
     treeTarget = target;
     pending = capture(target);
     window.clearTimeout(deadline);
@@ -1040,7 +1052,10 @@ export function installMotion(): () => void {
   document.addEventListener('pointerup', onCommit, true);
   document.addEventListener('pointermove', onPointerMove, true);
   document.addEventListener('click', onClick, true);
-  document.addEventListener('keydown', begin, true);
+  // The host's shortcut handler is a window capture listener that stops
+  // propagation for Cmd/Ctrl+B/E, so a document listener never sees them.
+  // Its sidebar state commits asynchronously, after this snapshot.
+  window.addEventListener('keydown', begin, true);
   document.addEventListener('wheel', onScroll, true);
   document.addEventListener('compositionstart', onCompositionStart, true);
   document.addEventListener('compositionend', onCompositionEnd, true);
@@ -1062,7 +1077,7 @@ export function installMotion(): () => void {
     document.removeEventListener('pointerup', onCommit, true);
     document.removeEventListener('pointermove', onPointerMove, true);
     document.removeEventListener('click', onClick, true);
-    document.removeEventListener('keydown', begin, true);
+    window.removeEventListener('keydown', begin, true);
     document.removeEventListener('wheel', onScroll, true);
     document.removeEventListener('compositionstart', onCompositionStart, true);
     document.removeEventListener('compositionend', onCompositionEnd, true);

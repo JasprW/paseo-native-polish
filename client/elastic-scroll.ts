@@ -11,6 +11,7 @@ interface Element {
   isConnected: boolean; style: Style;
   scrollTop: number; scrollHeight: number; clientHeight: number;
   closest(selector: string): Element | null;
+  matches(selector: string): boolean;
   querySelectorAll(selector: string): ArrayLike<Element>;
   getAttribute(key: string): string | null;
   setAttribute(key: string, value: string): void;
@@ -18,7 +19,7 @@ interface Element {
 }
 interface Input {
   target: Element | null; deltaY?: number; deltaX?: number; deltaMode?: number;
-  ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean; pointerType?: string;
+  ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean; pointerType?: string; buttons?: number;
   touches?: ArrayLike<{ clientX: number; clientY: number }>;
 }
 type Listener = (event: Input) => void;
@@ -37,7 +38,10 @@ declare const window: {
   removeEventListener(type: string, listener: Listener): void;
 };
 
-const SURFACES = '[data-testid="agent-chat-scroll"], [data-testid="sidebar-project-workspace-list-scroll"], [data-testid="sidebar-status-list-scroll"], [data-testid="file-explorer-tree-scroll"], [data-testid="changes-file-tree"]';
+const FILE_PANE = '[data-testid="workspace-file-pane"]';
+const SOURCE_SCROLL = `${FILE_PANE} [data-testid="file-source-editor"] .cm-scroller`;
+const SURFACES = '[data-testid="agent-chat-scroll"], [data-testid="sidebar-project-workspace-list-scroll"], [data-testid="sidebar-status-list-scroll"], [data-testid="file-explorer-tree-scroll"], [data-testid="changes-file-tree"], ' + SOURCE_SCROLL;
+const MARKDOWN_PREVIEW = '[data-testid="markdown-preview-frame"]';
 const MARKER = 'data-native-polish-elastic';
 const OFFSET = '--native-polish-elastic-offset';
 const COEFFICIENT = .55;
@@ -50,6 +54,7 @@ interface WheelGesture {
 }
 interface Spring {
   scroll: Element; content: Element; pull: number; position: number; velocity: number;
+  viewport: boolean;
   lastInput: number; touching: boolean; top: number; height: number;
   gesture?: WheelGesture;
   owners: Element[]; children: Element[]; translations: Map<Element, string>; restore(): void; written: string;
@@ -68,6 +73,17 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
     && window.CSS?.supports('overscroll-behavior-y', 'contain') === true;
   const supported = native || (window.CSS?.supports('translate', '0 1px') === true && window.CSS.supports('overflow', 'clip'));
   const scrollable = (el: Element) => /^(auto|scroll)$/.test(window.getComputedStyle(el).getPropertyValue('overflow-y'));
+  function markdownScroll(preview: Element): Element | null {
+    const pane = preview.closest(FILE_PANE);
+    if (!pane || !preview.isConnected || preview.closest('[data-native-polish-ghost]')) return null;
+    // Paseo's Markdown RN ScrollView has no test ID. Find its closest scroll
+    // owner from the known reading frame, stopping before the file-pane chrome.
+    let at = preview.parentElement;
+    for (let depth = 0; at && at !== pane && depth < 8; depth++, at = at.parentElement) {
+      if (scrollable(at)) return at;
+    }
+    return null;
+  }
   function boundary(scroll: Element) {
     if (boundaries.has(scroll)) return;
     const written = native ? 'contain' : 'none';
@@ -104,6 +120,10 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
       return;
     }
     const live = new Set(Array.from(document.body.querySelectorAll(SURFACES)).filter(el => !el.closest('[data-native-polish-ghost]') && scrollable(el)));
+    for (const preview of Array.from(document.body.querySelectorAll(`${FILE_PANE} ${MARKDOWN_PREVIEW}`))) {
+      const scroll = markdownScroll(preview);
+      if (scroll) live.add(scroll);
+    }
     for (const scroll of live) boundary(scroll);
     for (const scroll of Array.from(boundaries.keys())) if (!live.has(scroll)) {
       const state = springs.get(scroll);
@@ -113,7 +133,12 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
   }
   function owner(target: Element | null): Element | null {
     let el = target?.nodeType === 1 ? target : target?.parentElement ?? null;
-    const scope = el?.closest(SURFACES);
+    let scope = el?.closest(SURFACES);
+    if (!scope) {
+      const pane = el?.closest(FILE_PANE);
+      const preview = pane?.querySelectorAll(MARKDOWN_PREVIEW)[0];
+      if (preview) scope = markdownScroll(preview);
+    }
     if (!scope || scope.closest('[data-native-polish-ghost]')) return null;
     while (el) {
       // An inner code/detail scroller keeps its own boundary behavior.
@@ -155,7 +180,7 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
     previousTime = now;
     for (const state of Array.from(springs.values())) {
       if (!options.enabled() || !state.scroll.isConnected || !state.content.isConnected
-        || Array.from(state.scroll.children)[0] !== state.content
+        || (!state.viewport && Array.from(state.scroll.children)[0] !== state.content)
         || state.children.length !== state.content.children.length || state.children.some((el, index) => state.content.children[index] !== el)
         || Math.abs(state.scroll.scrollTop - state.top) > 2 || Math.abs(state.scroll.scrollHeight - state.height) > 2
         || state.content.style.getPropertyValue(OFFSET) !== state.written
@@ -187,12 +212,20 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
     const outward = (delta < 0 && scroll.scrollTop <= 1) || (delta > 0 && scroll.scrollTop >= max - 1);
     const current = springs.get(scroll);
     if (!outward) { if (current) finish(current); return; }
-    const content = Array.from(scroll.children)[0];
+    const viewport = scroll.matches(SOURCE_SCROLL);
+    // CodeMirror has several coordinated content/gutter/selection layers, not
+    // an RN content wrapper. Move the complete viewport inside its existing
+    // clipped host, keeping its internal geometry and scroll metrics together.
+    const content = viewport ? scroll : Array.from(scroll.children)[0];
     if (!content || scroll.clientHeight < 2 || !content.isConnected) return;
     let state = current;
     if (!state) {
+      if (viewport) {
+        const host = scroll.closest('[data-testid="file-source-editor"]');
+        if (!host || !/^(hidden|clip)$/.test(window.getComputedStyle(host).getPropertyValue('overflow-y'))) return;
+      }
       if (window.getComputedStyle(content).getPropertyValue('display') === 'contents') return;
-      const owners = boxChildren(content);
+      const owners = viewport ? [scroll] : boxChildren(content);
       if (!owners.length || owners.some(el => {
         const translate = window.getComputedStyle(el).getPropertyValue('translate');
         return translate && translate !== 'none' && !/^0(?:px)?(?: 0(?:px)?){0,2}$/.test(translate);
@@ -202,12 +235,14 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
       const height = scroll.scrollHeight;
       // Clip inside the unchanged content box, so translated descendants do
       // not extend scrollHeight or disturb virtualizer/follow-output offsets.
-      const restoreClip = styles(content, { 'overflow-x': 'clip', 'overflow-y': 'clip' });
+      // Never change CodeMirror's overflow or translate its individual lines.
+      // Its scroller retains native input, scrollTop and viewport sizing.
+      const restoreClip = viewport ? () => {} : styles(content, { 'overflow-x': 'clip', 'overflow-y': 'clip' });
       const restoreOwners = owners.map(el => styles(el, { translate: `0 var(${OFFSET})` }));
       const value = content.style.getPropertyValue(OFFSET);
       const priority = content.style.getPropertyPriority(OFFSET);
       state = {
-        scroll, content, pull: 0, position: 0, velocity: 0, lastInput: 0, touching,
+        scroll, content, viewport, pull: 0, position: 0, velocity: 0, lastInput: 0, touching,
         top, height,
         owners, children: Array.from(content.children), translations: new Map(owners.map(el => [el, el.style.getPropertyValue('translate')])),
         written: '0px', restore: () => {
@@ -239,9 +274,12 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
     if (!frame) { previousTime = 0; frame = window.requestAnimationFrame(tick); }
   }
   const wheel: Listener = event => {
-    if (native || !supported || !options.enabled() || event.ctrlKey || event.metaKey || event.shiftKey || Math.abs(event.deltaX ?? 0) >= Math.abs(event.deltaY ?? 0)) return;
+    if (!supported || !options.enabled() || event.buttons || event.ctrlKey || event.metaKey || event.shiftKey || Math.abs(event.deltaX ?? 0) >= Math.abs(event.deltaY ?? 0)) return;
     const scroll = owner(event.target);
     if (!scroll) return;
+    // Editor mounting can occur after the surrounding pane's layout refresh.
+    // Native mode can establish its boundary lazily on the first wheel event.
+    if (native) { boundary(scroll); return; }
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroll.clientHeight : 1;
     const delta = (event.deltaY ?? 0) * unit;
     const magnitude = Math.abs(delta);
@@ -329,6 +367,7 @@ export function installElasticScroll(options: { enabled(): boolean; quick(): boo
   const listeners: [string, Listener][] = [
     ['wheel', wheel], ['touchstart', touchStart], ['touchmove', touchMove], ['touchend', touchEnd],
     ['touchcancel', touchEnd], ['pointerdown', interrupt], ['keydown', reset],
+    ['beforeinput', reset], ['compositionstart', reset],
   ];
   for (const [type, listener] of listeners) document.addEventListener(type, listener, { capture: true, passive: true });
   window.addEventListener('blur', reset);

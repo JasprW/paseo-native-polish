@@ -5,15 +5,16 @@ export interface Preferences {
   pace: "gentle" | "quick";
 }
 export const defaults: Preferences = { enabled: true, sidebars: true, trees: true, timeline: true, panes: true, tabs: true, overlays: true, controls: true, states: true, messages: true, elasticScroll: true, edgePeek: true, pace: "gentle" };
-let current = defaults;
-const listeners = new Set<() => void>();
-export function getPreferences() { return current; }
+// Settings from every connected host control the single window motion owner.
+const scope = globalThis as typeof globalThis & { __paseoNativePolishPreferences?: { current: Preferences; listeners: Set<() => void> } };
+const store = scope.__paseoNativePolishPreferences ??= { current: defaults, listeners: new Set() };
+export function getPreferences() { return store.current; }
 export function setPreferences(next: Preferences) {
-  current = next;
-  for (const listener of listeners) listener();
+  store.current = next;
+  for (const listener of store.listeners) listener();
 }
 export function subscribePreferences(listener: () => void) {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
+  store.listeners.add(listener);
+  return () => { store.listeners.delete(listener); };
 }
 export function usePreferences() { return useSyncExternalStore(subscribePreferences, getPreferences, getPreferences); }

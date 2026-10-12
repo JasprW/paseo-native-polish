@@ -15,7 +15,7 @@ Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures tra
 | Explorer and timeline | Animate tree expansion/collapse, folder arrows, tool calls and thinking details. |
 | Overlays and controls | Short menu/dialog transitions, button press feedback and hover changes. |
 | Agent activity | Transition status changes and fade newly appended messages once near the conversation tail. |
-| Scrolling | Damped edge rebound for agent conversations, workspace lists, Files and Changes. Normal scrolling and inertia stay with Paseo. |
+| Scrolling | Damped edge rebound for agent conversations, workspace lists, Files, Changes, Markdown previews and editable/read-only file Source views. Normal scrolling and inertia stay with Paseo. |
 
 Workspace rows also move smoothly when pinned, unpinned or moved between status groups. Project creation/removal animates the group and surrounding list. These transitions use the sidebar motion setting.
 
@@ -28,6 +28,8 @@ The preview temporarily opens the real host sidebar, places it outside flex layo
 Each motion category can be switched off. Choose **Gentle** (220 ms) or **Quick** (150 ms). System **Reduce Motion** disables added animations; shorter feedback uses its own timings.
 
 **Elastic scrolling** has its own switch. Supported macOS/iOS browsers use their platform rebound. The Electron/other-browser fallback follows vertical wheel/trackpad and single-finger touch input directly, with viewport-dependent resistance and a fast return after release. A fling gets one edge collision and ignores residual momentum fluctuations. A quiet gap, direction change, spaced wheel impulse or sustained renewed pressure allows another pull at the same edge, starting from its visible offset. Horizontal scrolling, pinch zoom and nested code/detail scrollers retain their behavior. Quick speeds up only the fallback return. Native mobile clients keep their existing scrolling.
+
+File scrolling covers rendered Markdown and editable/read-only Source views for all text file types. CodeMirror moves its complete viewport so text, line numbers and selection layers stay together; clicking, typing or starting IME composition immediately restores it. HTML preview content is inside a sandboxed iframe and is not yet covered. Images retain their existing zoom/pan gestures, rather than document-scroll rebound.
 
 The desktop fallback is an approximation: Paseo's Electron window does not currently enable `scrollBounce`, and a client plugin cannot change that main-process option. Exact macOS rebound requires host support.
 
