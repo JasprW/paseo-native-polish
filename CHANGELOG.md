@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Animate sidebars toggled with Cmd/Ctrl+B and Cmd/Ctrl+E. Capture shortcuts on window capture, ahead of the host's propagation stop, and poll for the asynchronous layout commit.
+- Animate sidebars toggled with Cmd/Ctrl+B and Cmd/Ctrl+E. The host commits the toggle before later keydown listeners run, so take the sidebar baseline when Cmd/Ctrl goes down, reuse the last commit for repeated shortcuts and poll for the layout commit.
 - Fix hover previews staying open after the pointer enters a sandboxed HTML preview. Clear cross-document coordinates on both frame entry events, handle null relatedTarget via host hit-testing and observe pointerleave on the real sidebar root.
 - Keep hover previews outside flex layout until the host dock is hidden/unmounted, then rebase through two layout frames before resuming ordinary motion. Prevent closing previews from triggering a canvas scale animation.
 - Use one DOM motion adapter per client window across connected hosts, prefer the newer version and hand ownership over on disconnect. Share motion preferences across host contributions.

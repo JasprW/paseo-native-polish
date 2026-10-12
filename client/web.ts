@@ -232,7 +232,7 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  return leaseMotion('0.4.10-dev.0', installWebMotion);
+  return leaseMotion('0.4.10-dev.1', installWebMotion);
 }
 
 function installWebMotion(): () => void {
@@ -935,7 +935,17 @@ function installWebMotion(): () => void {
     if (target.closest(EDITING) && (!shortcut || target.closest('[data-testid="file-source-editor"],.cm-editor,.monaco-editor,[data-testid="terminal-surface"],.xterm'))) return false;
     return shortcut || Boolean(target.closest(ACTION));
   }
+  // The host's shortcut listener precedes ours on window capture, and React
+  // commits its sidebar state in a microtask before our listener runs. Take
+  // the sidebar baseline when the modifier goes down, before B/E arrives.
+  let primed: Map<string, Snapshot> | null = null;
+  const prime = (event: Event) => {
+    if (event.key !== 'Meta' && event.key !== 'Control') return;
+    primed = event.repeat || !canAnimate() ? primed : new Map(Array.from(panels()).filter(([, el]) => visible(el)).map(([key, el]) => [key, snapshot(el)]));
+  };
+  const unprime: Listener = event => { if (event.key === 'Meta' || event.key === 'Control') primed = null; };
   const begin = (event: Event) => {
+    if (event.key === 'Meta' || event.key === 'Control') { prime(event); return; }
     if (!capturesInput(event)) {
       // Selecting text or placing a caret may interrupt motion, but does not
       // require full snapshots. Ordinary keystrokes leave host input alone.
@@ -956,8 +966,13 @@ function installWebMotion(): () => void {
     layoutPolling = 0;
     // Shortcuts have no pointerup/click commit; poll for the async commit.
     if (event.key && (event.metaKey || event.ctrlKey)) layoutPolling = 12;
+    // Repeated shortcuts while the modifier stays down reuse the previous
+    // commit's baseline; the host has already applied this one.
+    const baseline = event.key && (event.metaKey || event.ctrlKey) ? primed ?? pending?.panels ?? null : null;
+    primed = null;
     treeTarget = target;
     pending = capture(target);
+    if (baseline) pending.panels = baseline;
     window.clearTimeout(deadline);
     deadline = window.setTimeout(() => { pending = null; treeTarget = null; }, 900);
     schedule();
@@ -1056,6 +1071,7 @@ function installWebMotion(): () => void {
   // propagation for Cmd/Ctrl+B/E, so a document listener never sees them.
   // Its sidebar state commits asynchronously, after this snapshot.
   window.addEventListener('keydown', begin, true);
+  window.addEventListener('keyup', unprime, true);
   document.addEventListener('wheel', onScroll, true);
   document.addEventListener('compositionstart', onCompositionStart, true);
   document.addEventListener('compositionend', onCompositionEnd, true);
@@ -1078,6 +1094,7 @@ function installWebMotion(): () => void {
     document.removeEventListener('pointermove', onPointerMove, true);
     document.removeEventListener('click', onClick, true);
     window.removeEventListener('keydown', begin, true);
+    window.removeEventListener('keyup', unprime, true);
     document.removeEventListener('wheel', onScroll, true);
     document.removeEventListener('compositionstart', onCompositionStart, true);
     document.removeEventListener('compositionend', onCompositionEnd, true);
