@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.10 · 2026-10-12
 
 - Animate sidebars toggled with Cmd/Ctrl+B and Cmd/Ctrl+E. The host commits the toggle before later keydown listeners run, so take the sidebar baseline when Cmd/Ctrl goes down, reuse the last commit for repeated shortcuts and poll for the layout commit.
 - Fix hover previews staying open after the pointer enters a sandboxed HTML preview. Clear cross-document coordinates on both frame entry events, handle null relatedTarget via host hit-testing and observe pointerleave on the real sidebar root.

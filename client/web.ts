@@ -232,11 +232,11 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  return leaseMotion('0.4.10-dev.1', installWebMotion);
+  return leaseMotion('0.4.10', installWebMotion);
 }
 
 function installWebMotion(): () => void {
-  document.body.setAttribute("data-native-polish", "0.4.10-dev.0");
+  document.body.setAttribute("data-native-polish", "0.4.10");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -248,7 +248,7 @@ function installWebMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.10-dev.0', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.10', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
