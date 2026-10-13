@@ -100,7 +100,9 @@ const PANE = '[data-testid^="workspace-pane-"]';
 const PANE_ACTION = '[data-testid="workspace-maximize-pane"], [data-testid="workspace-restore-pane"]';
 const TAB = '[data-testid^="workspace-tab-"][role="button"][aria-selected]';
 const TAB_ROW = '[data-testid="workspace-tabs-scroll"]';
-const FLOATING = '[data-menu-surface="true"], [role="dialog"], [role="tooltip"]';
+// Tooltips are transient hover affordances. Giving their text an entrance and
+// a cloned exit makes it flash both when the pointer arrives and when it goes.
+const FLOATING = '[data-menu-surface="true"], [role="dialog"]';
 const CHAT = '[data-testid="agent-chat-scroll"]';
 const HISTORY_ROW = '[data-history-row-id]';
 const EDITING = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[data-testid="file-source-editor"],.cm-editor,.monaco-editor,[data-testid="terminal-surface"],.xterm';
@@ -232,11 +234,11 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  return leaseMotion('0.4.13', installWebMotion);
+  return leaseMotion('0.4.14', installWebMotion);
 }
 
 function installWebMotion(): () => void {
-  document.body.setAttribute("data-native-polish", "0.4.13");
+  document.body.setAttribute("data-native-polish", "0.4.14");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -248,7 +250,7 @@ function installWebMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.13', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.14', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
