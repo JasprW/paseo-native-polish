@@ -2,7 +2,7 @@
 
 ## Boundaries
 
-`index.client.tsx` registers the settings screen, sidebar shortcut and Command Center action, then starts the web adapter. There is no server entry. Settings components use the public Paseo plugin UI and React Native primitives.
+`index.client.tsx` registers the settings screen and Command Center action, then starts the web adapter. There is no server entry. Settings components use the public Paseo plugin UI and React Native primitives.
 
 The public plugin API has no host-wide motion hook for existing sidebars or file trees. `client/web.ts` therefore contains a guarded DOM adapter and its minimal DOM types. Native platforms return a no-op. It does not import private React internals or patch the app bundle. All selectors target the Paseo 0.11.2 view structure.
 

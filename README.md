@@ -43,7 +43,7 @@ Requires **Paseo 0.11.2**, with plugins enabled on the target daemon. The declar
 paseo plugin add git:JasprW/paseo-native-polish
 ```
 
-Open **Native Polish** in the sidebar, or use **Native Polish: motion settings** in the Command Center.
+Open **Settings → Plugins → Native Polish**, or use **Native Polish: motion settings** in the Command Center.
 
 ```sh
 paseo plugin update paseo-native-polish

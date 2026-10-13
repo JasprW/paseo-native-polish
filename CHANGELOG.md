@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.12 · 2026-10-13
+
+- Remove the sidebar footer entry. Open motion settings from Settings → Plugins or the Command Center.
+
 ## 0.4.11 · 2026-10-13
 
 - Restore elastic scrolling in hover-previewed sidebars. The preview suppresses layout captures, but no longer disables rebound for its own lists.

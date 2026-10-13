@@ -34,7 +34,7 @@
 paseo plugin add git:JasprW/paseo-native-polish
 ```
 
-点击侧边栏 **Native Polish**，或在 Command Center 中选择 **Native Polish: motion settings**。
+在 **设置 → 插件 → Native Polish** 中打开，或在 Command Center 中选择 **Native Polish: motion settings**。
 
 ```sh
 paseo plugin update paseo-native-polish
