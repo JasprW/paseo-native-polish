@@ -232,11 +232,11 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  return leaseMotion('0.4.10', installWebMotion);
+  return leaseMotion('0.4.11', installWebMotion);
 }
 
 function installWebMotion(): () => void {
-  document.body.setAttribute("data-native-polish", "0.4.10");
+  document.body.setAttribute("data-native-polish", "0.4.11");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -248,7 +248,7 @@ function installWebMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.10', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.11', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -265,7 +265,10 @@ function installWebMotion(): () => void {
   const active = new Map<Element, () => void>();
   const ghosts = new Set<Element>();
   let edgePeek: ReturnType<typeof installEdgePeek> | null = null;
-  const canAnimate = () => !disposed && !suspended && document.body.getAttribute('data-native-polish-peek') === null && !edgePeek?.isTransitioning() && getPreferences().enabled && !reduceMotion.matches;
+  const motionReady = () => !disposed && !suspended && !edgePeek?.isTransitioning() && getPreferences().enabled && !reduceMotion.matches;
+  // Layout captures stay off while an edge preview is open; its scrolling is
+  // still ordinary list input, so elastic rebound uses motionReady alone.
+  const canAnimate = () => motionReady() && document.body.getAttribute('data-native-polish-peek') === null;
   const duration = () => getPreferences().pace === 'quick' ? 150 : 220;
 
   const stopAll = () => {
@@ -451,7 +454,7 @@ function installWebMotion(): () => void {
   const dirty = new Set<Region>();
   let scrollDeadline = 0;
   const elastic = installElasticScroll({
-    enabled: () => canAnimate() && getPreferences().elasticScroll,
+    enabled: () => motionReady() && getPreferences().elasticScroll,
     quick: () => getPreferences().pace === 'quick',
     onRest: () => { quietUntil = Math.max(quietUntil, Date.now() + 350); scheduleAmbient(['workspaces', 'tabs', 'messages']); },
   });

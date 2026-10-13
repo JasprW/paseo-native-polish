@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.11 · 2026-10-13
+
+- Restore elastic scrolling in hover-previewed sidebars. The preview suppresses layout captures, but no longer disables rebound for its own lists.
+
 ## 0.4.10 · 2026-10-12
 
 - Animate sidebars toggled with Cmd/Ctrl+B and Cmd/Ctrl+E. The host commits the toggle before later keydown listeners run, so take the sidebar baseline when Cmd/Ctrl goes down, reuse the last commit for repeated shortcuts and poll for the layout commit.
