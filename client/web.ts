@@ -232,11 +232,11 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  return leaseMotion('0.4.12', installWebMotion);
+  return leaseMotion('0.4.13', installWebMotion);
 }
 
 function installWebMotion(): () => void {
-  document.body.setAttribute("data-native-polish", "0.4.12");
+  document.body.setAttribute("data-native-polish", "0.4.13");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -248,7 +248,7 @@ function installWebMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.12', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.13', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -437,7 +437,7 @@ function installWebMotion(): () => void {
     projects: Map<string, Snapshot>; anchors: Map<string, WorkspaceAnchor>; expanded: Map<string, string | null>;
   }
   let workspaceLists = new Map<Element, WorkspaceList>();
-  interface FloatingSnapshot extends Snapshot { opacity: number }
+  interface FloatingSnapshot extends Snapshot { opacity: number; hostExit: boolean }
   let floating = new Map<Element, FloatingSnapshot>();
   let paneBaseline = paneBoxes();
   let paneTransition: Map<string, PaneBox> | null = null;
@@ -682,19 +682,33 @@ function installWebMotion(): () => void {
     ghosts.add(copy);
     animate(copy, [{ opacity: 1, scale: 1 }, { opacity: 0, scale: .98 }], () => { copy.remove(); ghosts.delete(copy); }, 0, Math.round(duration() * .65));
   }
+  // Paseo animates some overlays on the surface or its portal wrappers. A
+  // keyframe animation is an entrance only; a fade transition also runs on
+  // close, so neither gets a second entrance and transitions get no copy.
+  function hostMotion(el: Element): { entrance: boolean; exit: boolean } {
+    let entrance = false, exit = false;
+    for (let at: Element | null = el, depth = 0; at && at !== document.body && depth < 4; at = at.parentElement, depth++) {
+      const style = window.getComputedStyle(at);
+      if (style.getPropertyValue('animation-name').split(',').some(name => name.trim() && name.trim() !== 'none')) entrance = true;
+      const properties = style.getPropertyValue('transition-property').split(',');
+      const durations = style.getPropertyValue('transition-duration').split(',');
+      if (properties.some((property, index) => /^(all|opacity|transform|translate)$/.test(property.trim()) && parseFloat(durations[index % durations.length]) > 0)) entrance = exit = true;
+    }
+    return { entrance, exit };
+  }
   function updateFloating(allow: boolean) {
     const next = new Map<Element, FloatingSnapshot>();
     for (const el of live(FLOATING).filter(el => { const r = rect(el); return r.right > 0 && r.left < window.innerWidth; }).slice(0, 12)) {
       // Nested menu pages/dialog children must not get two entrances.
       if (el.parentElement?.closest(FLOATING)) continue;
       const previous = floating.get(el);
+      const host = previous ? null : hostMotion(el);
       const opacity = parseFloat(window.getComputedStyle(el).getPropertyValue('opacity'));
-      next.set(el, active.has(el) && previous ? previous : { ...snapshot(el), opacity: Number.isFinite(opacity) ? opacity : 1 });
-      if (!allow || !getPreferences().overlays || previous) continue;
-      // Paseo already animates some menus. Keep its entrance; add our exit.
+      next.set(el, active.has(el) && previous ? previous : { ...snapshot(el), opacity: Number.isFinite(opacity) ? opacity : 1, hostExit: previous?.hostExit ?? host?.exit ?? false });
+      if (!allow || !getPreferences().overlays || previous || host?.entrance) continue;
       if (!el.getAnimations?.().length) animate(el, [{ opacity: 0, scale: .98 }, { opacity: 1, scale: 1 }], undefined, 0, Math.min(duration(), 180));
     }
-    if (allow && getPreferences().overlays) for (const [el, before] of floating) if (!next.has(el) && before.opacity > .1) floatingExit(before);
+    if (allow && getPreferences().overlays) for (const [el, before] of floating) if (!next.has(el) && before.opacity > .1 && !before.hostExit) floatingExit(before);
     floating = next;
   }
   function updatePaneLayout(allow: boolean) {
@@ -902,6 +916,8 @@ function installWebMotion(): () => void {
       // Host spinner leaf styles likewise do not invalidate whole layouts.
       if (record.attributeName === 'style' && target.closest('[data-native-polish-elastic]')) continue;
       if (record.attributeName === 'data-status-bucket') { scheduleAmbient(['agents']); continue; }
+      // Reused portal surfaces open by gaining role="dialog"/"tooltip".
+      if (record.attributeName === 'role') { scheduleAmbient(['floating', 'controls']); continue; }
       if (structural || record.attributeName === 'aria-expanded' || target.matches(PANE) || target.querySelector(PANE)) schedule();
       const meaningful = structural || ['aria-expanded', 'aria-selected', 'aria-busy'].includes(record.attributeName ?? '');
       if (target.closest(CHAT)) {
@@ -920,7 +936,7 @@ function installWebMotion(): () => void {
       }
     }
   });
-  observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'class', 'aria-hidden', 'aria-expanded', 'aria-selected', 'aria-busy', 'data-status-bucket'] });
+  observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'class', 'role', 'aria-hidden', 'aria-expanded', 'aria-selected', 'aria-busy', 'data-status-bucket'] });
   function clearCapture() {
     pending = null; treeTarget = null; pointerOrigin = null; layoutPolling = 0;
     window.clearTimeout(deadline); deadline = 0;
