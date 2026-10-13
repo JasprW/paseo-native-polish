@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.14 · 2026-10-13
+
+- Stop applying overlay entrance and exit animation to hover tooltips. Tooltip text now follows Paseo's immediate hover lifecycle instead of flashing on pointer enter or leave.
+
 ## 0.4.13 · 2026-10-13
 
 - Stop doubling overlay animations. Popups that Paseo already fades, such as Usage, no longer get a second entrance or exit, and the Command Center no longer replays its entrance while typing. Reused portal surfaces are recognized when they open.
