@@ -105,7 +105,9 @@ const PANE = '[data-testid^="workspace-pane-"]';
 const PANE_ACTION = '[data-testid="workspace-maximize-pane"], [data-testid="workspace-restore-pane"]';
 const TAB = '[data-testid^="workspace-tab-"][role="button"][aria-selected]';
 const TAB_ROW = '[data-testid="workspace-tabs-scroll"]';
-const FLOATING = '[data-menu-surface="true"], [role="dialog"], [role="tooltip"]';
+// Tooltips are transient hover affordances. Giving their text an entrance and
+// a cloned exit makes it flash both when the pointer arrives and when it goes.
+const FLOATING = '[data-menu-surface="true"], [role="dialog"]';
 const CHAT = '[data-testid="agent-chat-scroll"]';
 const HISTORY_ROW = '[data-history-row-id]';
 const EDITING = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[data-testid="file-source-editor"],.cm-editor,.monaco-editor,[data-testid="terminal-surface"],.xterm';
