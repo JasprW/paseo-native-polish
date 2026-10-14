@@ -418,10 +418,14 @@ function installWebMotion(): () => void {
     for (const row of after.rows.slice(0, 100)) {
       const old = oldRows.get(row.key);
       if (!old) {
-        animate(row.element, [{ opacity: 0, transform: 'translateY(-5px)' }, { opacity: 1, transform: 'translateY(0)' }], undefined, Math.min(entered++ * 8, 48));
+        // Diff rows can already have a host transform for virtualized layout.
+        // Animating `transform` would replace that position and scatter rows
+        // during a folder collapse/expand. The independent translate property
+        // composes with the host transform instead.
+        animate(row.element, [{ opacity: 0, translate: '0 -5px' }, { opacity: 1, translate: '0 0' }], undefined, Math.min(entered++ * 8, 48));
       } else {
         const delta = old.box.top - row.box.top;
-        if (Math.abs(delta) > 1) animate(row.element, [{ transform: `translateY(${delta}px)` }, { transform: 'translateY(0)' }]);
+        if (Math.abs(delta) > 1) animate(row.element, [{ translate: `0 ${delta}px` }, { translate: '0 0' }]);
       }
     }
   }
