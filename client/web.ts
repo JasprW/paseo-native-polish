@@ -15,7 +15,12 @@ interface Style {
   setProperty(key: string, value: string, priority?: string): void;
   removeProperty(key: string): void;
 }
-interface Animation { cancel(): void; finished: Promise<unknown> }
+interface Animation {
+  cancel(): void; finished: Promise<unknown>;
+  /** CSS animations only. */
+  animationName?: string;
+  effect?: { getKeyframes?(): Record<string, unknown>[] } | null;
+}
 interface Element {
   nodeType: number; parentElement: Element | null; nextElementSibling: Element | null; children: ArrayLike<Element>;
   style: Style; isConnected: boolean; textContent: string | null;
@@ -37,7 +42,7 @@ interface Element {
   animate(frames: Record<string, string | number>[], options: { duration: number; easing: string; fill?: string; delay?: number }): Animation;
   getAnimations?(): Animation[];
 }
-interface Event { target: Element | null; key?: string; keyCode?: number; isComposing?: boolean; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; repeat?: boolean; button?: number; buttons?: number; clientX?: number; clientY?: number }
+interface Event { target: Element | null; animationName?: string; key?: string; keyCode?: number; isComposing?: boolean; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; repeat?: boolean; button?: number; buttons?: number; clientX?: number; clientY?: number }
 type Listener = (event: Event) => void;
 interface Media { matches: boolean; addEventListener(type: string, callback: () => void): void; removeEventListener(type: string, callback: () => void): void }
 declare const document: {
@@ -232,11 +237,11 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  return leaseMotion('0.4.13', installWebMotion);
+  return leaseMotion('0.4.14', installWebMotion);
 }
 
 function installWebMotion(): () => void {
-  document.body.setAttribute("data-native-polish", "0.4.13");
+  document.body.setAttribute("data-native-polish", "0.4.14");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -248,7 +253,7 @@ function installWebMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.13', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.14', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -683,8 +688,10 @@ function installWebMotion(): () => void {
     animate(copy, [{ opacity: 1, scale: 1 }, { opacity: 0, scale: .98 }], () => { copy.remove(); ghosts.delete(copy); }, 0, Math.round(duration() * .65));
   }
   // Paseo animates some overlays on the surface or its portal wrappers. A
-  // keyframe animation is an entrance only; a fade transition also runs on
-  // close, so neither gets a second entrance and transitions get no copy.
+  // keyframe animation is an entrance; a fade transition also runs on close,
+  // so neither gets a second entrance and transitions get no copy. A host
+  // keyframe exit (React Native web Modal fades out with one) is caught when
+  // it starts, see onAnimationStart.
   function hostMotion(el: Element): { entrance: boolean; exit: boolean } {
     let entrance = false, exit = false;
     for (let at: Element | null = el, depth = 0; at && at !== document.body && depth < 4; at = at.parentElement, depth++) {
@@ -696,6 +703,24 @@ function installWebMotion(): () => void {
     }
     return { entrance, exit };
   }
+  // A CSS animation on `el` that ends (nearly) transparent: the host's own exit.
+  function fadesOut(el: Element, name: string | undefined): boolean {
+    for (const animation of el.getAnimations?.() ?? []) {
+      if (!name || animation.animationName !== name) continue;
+      const frames = animation.effect?.getKeyframes?.() ?? [];
+      const opacity = Number(frames[frames.length - 1]?.opacity);
+      if (Number.isFinite(opacity) && opacity <= .1) return true;
+    }
+    return false;
+  }
+  // The host fades a tracked overlay (or its portal wrapper) out with a
+  // keyframe animation, e.g. React Native web Modal with animationType
+  // "fade". It is removed when that ends; an exit copy would fade it again.
+  const onAnimationStart: Listener = event => {
+    const target = elementOf(event.target);
+    if (!target || !floating.size || target.closest('[data-native-polish-ghost]') || !fadesOut(target, event.animationName)) return;
+    for (const [el, before] of floating) if (el === target || hasAncestor(el, [target])) before.hostExit = true;
+  };
   function updateFloating(allow: boolean) {
     const next = new Map<Element, FloatingSnapshot>();
     for (const el of live(FLOATING).filter(el => { const r = rect(el); return r.right > 0 && r.left < window.innerWidth; }).slice(0, 12)) {
@@ -1095,6 +1120,7 @@ function installWebMotion(): () => void {
   document.addEventListener('compositionstart', onCompositionStart, true);
   document.addEventListener('compositionend', onCompositionEnd, true);
   document.addEventListener('visibilitychange', onVisibility);
+  document.addEventListener('animationstart', onAnimationStart, true);
   window.addEventListener('blur', onWindowBlur);
   window.addEventListener('focus', onWindowFocus);
   reduceMotion.addEventListener('change', onReduce);
@@ -1118,6 +1144,7 @@ function installWebMotion(): () => void {
     document.removeEventListener('compositionstart', onCompositionStart, true);
     document.removeEventListener('compositionend', onCompositionEnd, true);
     document.removeEventListener('visibilitychange', onVisibility);
+    document.removeEventListener('animationstart', onAnimationStart, true);
     window.clearTimeout(blurTimer);
     window.removeEventListener('blur', onWindowBlur);
     window.removeEventListener('focus', onWindowFocus);

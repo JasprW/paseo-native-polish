@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.14 · 2026-10-19
+
+- Stop replaying the close of dialogs that fade out with a keyframe animation. React Native web modals (e.g. a plugin's settings window) fade themselves out and are removed afterwards; the exit copy then faded the whole window a second time. A host animation that ends transparent on an overlay or its portal wrapper now marks the exit as host-owned.
+
 ## 0.4.13 · 2026-10-13
 
 - Stop doubling overlay animations. Popups that Paseo already fades, such as Usage, no longer get a second entrance or exit, and the Command Center no longer replays its entrance while typing. Reused portal surfaces are recognized when they open.
