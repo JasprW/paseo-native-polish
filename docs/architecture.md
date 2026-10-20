@@ -36,7 +36,7 @@ Preferences use a small reactive store and client-local storage. Reduce Motion i
 
 ## Compatibility
 
-The manifest limits the plugin to Paseo 0.11.x with a minimum of 0.11.2. The adapter was developed against 0.11.2. A compatible semver range does not establish that every host DOM revision has been reviewed. Inspect changed selectors and their retained/unmounted lifecycle before widening the range.
+The manifest requires Paseo 0.11.2 or later, with no upper bound. The adapter was developed against 0.11.2; its feature guards fail closed when host DOM revisions differ, so newer hosts do not need a manifest change to load the plugin.
 
 ## Desktop edge preview
 

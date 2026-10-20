@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.15 · 2026-10-20
+
+- Drop the Paseo version upper bound. The plugin now requires Paseo 0.11.2 or later instead of `<0.12.0`, so it keeps loading on newer hosts.
+
 ## 0.4.14 · 2026-10-19
 
 - Stop replaying the close of dialogs that fade out with a keyframe animation. React Native web modals (e.g. a plugin's settings window) fade themselves out and are removed afterwards; the exit copy then faded the whole window a second time. A host animation that ends transparent on an overlay or its portal wrapper now marks the exit as host-owned.

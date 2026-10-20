@@ -37,7 +37,7 @@ Streaming updates are coalesced by surface; wheel bursts rebase list snapshots a
 
 ## Install
 
-Requires **Paseo 0.11.2**, with plugins enabled on the target daemon. The declared range is `>=0.11.2 <0.12.0`; the DOM adapter is based on 0.11.2 and later patch versions have not been audited.
+Requires **Paseo 0.11.2** or later, with plugins enabled on the target daemon. The DOM adapter was developed against 0.11.2.
 
 ```sh
 paseo plugin add git:JasprW/paseo-native-polish

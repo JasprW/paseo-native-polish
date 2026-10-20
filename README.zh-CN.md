@@ -28,7 +28,7 @@
 
 ## 安装
 
-需要 **Paseo 0.11.2**，并在目标 daemon 启用插件。声明兼容范围为 `>=0.11.2 <0.12.0`；其他补丁版本尚未逐一检查。
+需要 **Paseo 0.11.2** 或更高版本，并在目标 daemon 启用插件。适配器基于 0.11.2 开发。
 
 ```sh
 paseo plugin add git:JasprW/paseo-native-polish
@@ -44,7 +44,7 @@ paseo plugin enable paseo-native-polish
 
 ## 平台与数据
 
-动效适用于桌面和浏览器客户端；iOS／Android 保留原有原生过渡。适配器依赖 Paseo 0.11.2 的内部 DOM，升级到新 minor 版本需要重新检查。
+动效适用于桌面和浏览器客户端；iOS／Android 保留原有原生过渡。适配器依赖 Paseo 的内部 DOM，并在 DOM 不符时安全降级。
 
 插件没有 daemon 后端，也不发送外部请求。退出动效会短暂复制本地可见 DOM；副本不可交互、对辅助技术隐藏，并在过渡后移除。拖动和滚动会中断动效，流式文本及历史消息不会反复播放入场动画。
 
