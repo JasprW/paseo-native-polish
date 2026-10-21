@@ -3,6 +3,7 @@ import { defaults, getPreferences, setPreferences, subscribePreferences } from "
 import { installElasticScroll } from "./elastic-scroll";
 import { installEdgePeek } from "./edge-peek";
 import { leaseMotion } from "./motion-runtime";
+import { isChangeTreeRowTestId, treeMotionOwners, treeRowTranslation, treeRowsAfterAnchor } from "./tree-motion";
 
 /* Desktop/Web adapter for Paseo 0.11.2. Host DOM is not a public plugin API.
  * Keep selectors here; native clients never touch these globals. No host events
@@ -98,7 +99,7 @@ function hasAncestor(el: Element, ancestors: Iterable<Element>): boolean {
 interface Snapshot { element: Element; box: Rect; copy: Element; parent: Element | null; next: Element | null }
 interface Disclosure { element: Element; height: number; children: Element[]; details: Snapshot[] }
 interface RowSnapshot extends Snapshot { key: string }
-interface Tree { element: Element; rows: RowSnapshot[] }
+interface Tree { element: Element; rows: RowSnapshot[]; anchorKey: string | null }
 interface PaneBox { element: Element; box: Rect }
 interface Capture { panels: Map<string, Snapshot>; panes: Map<string, PaneBox>; paneAction: boolean; paneMotion: boolean; disclosure: Disclosure | null; tree: Tree | null }
 const PANE = '[data-testid^="workspace-pane-"]';
@@ -215,10 +216,19 @@ function captureDisclosure(el: Element | null): Disclosure | null {
   const children = Array.from(el.children);
   return { element: el, height: rect(el).height, children, details: children.slice(1).filter(visible).map(snapshot) };
 }
+function closestChangeRow(target: Element): Element | null {
+  for (let cursor: Element | null = target; cursor; cursor = cursor.parentElement) {
+    if (cursor.matches(CHANGE_ROW) && isChangeTreeRowTestId(cursor.getAttribute('data-testid'))) return cursor;
+  }
+  return null;
+}
 function captureTree(target: Element): Tree | null {
   const tree = target.closest(FILE_TREE + ', ' + CHANGE_TREE);
   if (!tree) return null;
-  const rows = all(tree, tree.matches(CHANGE_TREE) ? CHANGE_ROW : FILE_ROW);
+  const diffTree = tree.matches(CHANGE_TREE);
+  const anchor = diffTree ? closestChangeRow(target) : target.closest(FILE_ROW);
+  let anchorKey: string | null = null;
+  const rows = diffTree ? all(tree, CHANGE_ROW).filter(row => isChangeTreeRowTestId(row.getAttribute('data-testid'))) : all(tree, FILE_ROW);
   // Rows are keyed by hierarchy and name, because the host's numeric test IDs
   // shift on every expand/collapse. Indentation distinguishes nested duplicates.
   const stack: { depth: number; name: string }[] = [];
@@ -230,11 +240,12 @@ function captureTree(target: Element): Tree | null {
     while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
     const key = JSON.stringify([...stack.map(item => item.name), name]);
     stack.push({ depth, name });
+    if (anchor && (row === anchor || hasAncestor(anchor, [row]))) anchorKey = key;
     // Match the bounded tree animation budget; do not deep-copy an arbitrary
     // number of visible rows on the input path.
     if (snapshots.length < 120) snapshots.push({ ...snapshot(row), key });
   }
-  return { element: tree, rows: snapshots };
+  return { element: tree, rows: snapshots, anchorKey };
 }
 
 export function installMotion(): () => void {
@@ -419,10 +430,26 @@ function installWebMotion(): () => void {
     const oldRows = new Map(before.rows.map(row => [row.key, row]));
     const nextKeys = new Set(after.rows.map(row => row.key));
     if (before.rows.length === after.rows.length && before.rows.every((row, index) => row.key === after.rows[index].key)) return;
+    // A folder disclosure can affect the virtualizer's measurements for every
+    // row, including those above the clicked folder. Only rows after that
+    // folder have a real disclosure-driven position change.
+    const anchorKey = before.anchorKey ?? after.anchorKey;
+    const beforeAnchor = before.rows.find(row => row.key === anchorKey) ?? null;
+    const afterAnchor = after.rows.find(row => row.key === anchorKey) ?? null;
+    const previousRows = treeRowsAfterAnchor(before.rows, beforeAnchor);
+    const nextRows = treeRowsAfterAnchor(after.rows, afterAnchor);
+    // A moved folder carries all of its descendants. Giving those descendants
+    // the same FLIP translation applies the delta twice, then makes them snap
+    // back when their independent animation ends.
+    const translations = new Map(treeMotionOwners(nextRows.map(row => {
+      const old = oldRows.get(row.key);
+      return { row, translation: old ? treeRowTranslation(old.box.top - row.box.top) : null };
+    }), (ancestor, descendant) => hasAncestor(descendant.element, [ancestor.element]))
+      .map(({ row, translation }) => [row.element, translation!]));
     // Bound work for very large trees; the viewport's rows still move together.
-    for (const row of before.rows.slice(0, 80)) if (!nextKeys.has(row.key)) ghost(row);
+    for (const row of previousRows.slice(0, 80)) if (!nextKeys.has(row.key)) ghost(row);
     let entered = 0;
-    for (const row of after.rows.slice(0, 100)) {
+    for (const row of nextRows.slice(0, 100)) {
       const old = oldRows.get(row.key);
       if (!old) {
         // Diff rows can already have a host transform for virtualized layout.
@@ -431,8 +458,8 @@ function installWebMotion(): () => void {
         // composes with the host transform instead.
         animate(row.element, [{ opacity: 0, translate: '0 -5px' }, { opacity: 1, translate: '0 0' }], undefined, Math.min(entered++ * 8, 48));
       } else {
-        const delta = old.box.top - row.box.top;
-        if (Math.abs(delta) > 1) animate(row.element, [{ translate: `0 ${delta}px` }, { translate: '0 0' }]);
+        const translation = translations.get(row.element);
+        if (translation) animate(row.element, [{ translate: translation }, { translate: '0 0' }]);
       }
     }
   }
