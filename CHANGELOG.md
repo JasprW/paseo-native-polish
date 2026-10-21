@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.16 · 2026-10-21
+
+- Stop applying overlay entrance and exit animation to hover tooltips. Tooltip text now follows Paseo's own hover lifecycle instead of flashing on pointer enter or leave. Thanks to @squizzi for the fix in #1.
+- Correct the listing's settings instructions to point to Settings → Plugins → Native Polish or the Command Center.
+
 ## 0.4.15 · 2026-10-20
 
 - Drop the Paseo version upper bound. The plugin now requires Paseo 0.11.2 or later instead of `<0.12.0`, so it keeps loading on newer hosts.

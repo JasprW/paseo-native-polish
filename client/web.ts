@@ -239,11 +239,11 @@ function captureTree(target: Element): Tree | null {
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  return leaseMotion('0.4.15', installWebMotion);
+  return leaseMotion('0.4.16', installWebMotion);
 }
 
 function installWebMotion(): () => void {
-  document.body.setAttribute("data-native-polish", "0.4.15");
+  document.body.setAttribute("data-native-polish", "0.4.16");
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -255,7 +255,7 @@ function installWebMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.15', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.16', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -943,7 +943,7 @@ function installWebMotion(): () => void {
       // Host spinner leaf styles likewise do not invalidate whole layouts.
       if (record.attributeName === 'style' && target.closest('[data-native-polish-elastic]')) continue;
       if (record.attributeName === 'data-status-bucket') { scheduleAmbient(['agents']); continue; }
-      // Reused portal surfaces open by gaining role="dialog"/"tooltip".
+      // Reused dialog portal surfaces open by gaining role="dialog".
       if (record.attributeName === 'role') { scheduleAmbient(['floating', 'controls']); continue; }
       if (structural || record.attributeName === 'aria-expanded' || target.matches(PANE) || target.querySelector(PANE)) schedule();
       const meaningful = structural || ['aria-expanded', 'aria-selected', 'aria-busy'].includes(record.attributeName ?? '');

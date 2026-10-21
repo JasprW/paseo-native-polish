@@ -13,7 +13,7 @@ Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures tra
 | Panes | Animate split, close, maximize and restore. |
 | Tabs | Animate opening, closing and reordering; transition selection colors. |
 | Explorer and timeline | Animate tree expansion/collapse, folder arrows, tool calls and thinking details. |
-| Overlays and controls | Short menu/dialog transitions, button press feedback and hover changes. |
+| Overlays and controls | Short menu/dialog transitions, button press feedback and hover changes. Tooltips keep Paseo's own motion and hover lifecycle. |
 | Agent activity | Transition status changes and fade newly appended messages once near the conversation tail. |
 | Scrolling | Damped edge rebound for agent conversations, workspace lists, Files, Changes, Markdown previews and editable/read-only file Source views. Normal scrolling and inertia stay with Paseo. |
 

@@ -12,7 +12,7 @@
 - Pane 分割、关闭、最大化及恢复。
 - Tab 打开、关闭、排序和选中状态过渡。
 - 文件树、文件夹箭头、工具调用和 thinking 展开／收起。
-- 菜单、弹层、按钮按压和 hover 反馈。
+- 菜单、弹层、按钮按压和 hover 反馈；tooltip 沿用 Paseo 原有的动效与悬停生命周期。
 - Agent 状态变化，以及对话尾部新消息的一次淡入。
 - Agent 对话、workspace、Files、Changes 列表、Markdown 文件预览和所有文本文件 Source 模式的弹性滚动：到顶／到底后轻微拉动，再以阻尼弹簧回到原位。
 
