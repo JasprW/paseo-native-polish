@@ -14,9 +14,9 @@ export function leaseMotion(version: string, install: () => () => void): () => v
         const difference = candidate.version[index] - best.version[index];
         if (difference) return difference > 0 ? candidate : best;
       }
-      // A plugin reload normally keeps its manifest version. Prefer the
-      // lease registered most recently so its freshly evaluated code can
-      // take over from an older same-version bundle.
+      // A plugin reload evaluates a new client bundle without necessarily
+      // disconnecting the old one first.  Equal versions therefore mean the
+      // later lease is the freshly reloaded code and must take ownership.
       return candidate;
     }, null);
     if (runtime.owner === next) return;
