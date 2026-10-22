@@ -1,0 +1,8 @@
+{
+  "id": "paseo-native-polish",
+  "name": "Native Polish",
+  "description": "Motion for sidebars, tabs, panes, overlays, file trees and agent activity.",
+  "requirements": {
+    "paseo": ">=0.11.2"
+  }
+}
