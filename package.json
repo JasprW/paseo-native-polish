@@ -11,6 +11,8 @@
     "NOTICE"
   ],
   "scripts": {
+    "test:motion-runtime": "node --experimental-strip-types tests/motion-runtime.test.mjs",
+    "test:tree-motion": "node --experimental-strip-types tests/tree-motion.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
