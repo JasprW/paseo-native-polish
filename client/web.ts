@@ -286,13 +286,16 @@ function captureTree(target: Element): Tree | null {
   return { element: tree, rows: snapshots, anchorKey };
 }
 
+// Keep in step with package.json. leaseMotion uses it to pick which bundle owns the window.
+const VERSION = '0.4.16';
+
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
-  return leaseMotion('0.4.16', installWebMotion);
+  return leaseMotion(VERSION, installWebMotion);
 }
 
 function installWebMotion(): () => void {
-  document.body.setAttribute("data-native-polish", "0.4.16");
+  document.body.setAttribute("data-native-polish", VERSION);
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   try {
@@ -304,7 +307,7 @@ function installWebMotion(): () => void {
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
-  console.info('[Native Polish] loaded', JSON.stringify({ version: '0.4.16', preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
+  console.info('[Native Polish] loaded', JSON.stringify({ version: VERSION, preferences: getPreferences(), reduceMotion: reduceMotion.matches }));
   let disposed = false;
   let pending: Capture | null = null;
   let frame = 0;
@@ -351,11 +354,16 @@ function installWebMotion(): () => void {
   }
   function temporaryStyles(el: Element, values: Record<string, string>): () => void {
     const previous = Object.keys(values).map(key => [key, el.style.getPropertyValue(key), el.style.getPropertyPriority(key)]);
-    for (const [key, value] of Object.entries(values)) el.style.setProperty(key, value);
+    // Compare against what the browser stored, not what was written: it
+    // normalizes values (`0` reads back as `0px`, `0 0` as `0px 0px`).
+    const written = new Map<string, string>();
+    for (const [key, value] of Object.entries(values)) {
+      el.style.setProperty(key, value); written.set(key, el.style.getPropertyValue(key));
+    }
     return () => {
       for (const [key, value, priority] of previous) {
         // Restore only values still owned by us; React may have updated a style.
-        if (el.style.getPropertyValue(key) !== values[key]) continue;
+        if (el.style.getPropertyValue(key) !== written.get(key)) continue;
         if (value) el.style.setProperty(key, value, priority);
         else el.style.removeProperty(key);
       }
