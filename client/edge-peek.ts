@@ -176,6 +176,9 @@ export function installEdgePeek(options: {
   }
   function restore(handoff = false) {
     if (!current) return;
+    // The observer and phaseTimer can both reach here; a second call would
+    // orphan the first restoreTimer, which could later tear down a newer preview.
+    if (current.restoring && !handoff) return;
     current.restoring = true;
     // Use the original control only while it still belongs to this screen.
     // Never toggle a newly navigated workspace's independent visibility.
