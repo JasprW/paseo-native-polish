@@ -66,6 +66,8 @@ declare const window: {
   localStorage: { getItem(key: string): string | null; setItem(key: string, value: string): void };
   addEventListener(type: string, callback: Listener, capture?: boolean): void;
   removeEventListener(type: string, callback: Listener, capture?: boolean): void;
+  Event?: new (type: string) => Event;
+  dispatchEvent?(event: Event): boolean;
 };
 interface Mutation { type: string; target: Element; attributeName: string | null; addedNodes: ArrayLike<Element>; removedNodes: ArrayLike<Element> }
 declare const MutationObserver: new (callback: (records: Mutation[]) => void) => { observe(target: Element, options: { subtree: boolean; childList: boolean; characterData: boolean; attributes: boolean; attributeFilter: string[] }): void; disconnect(): void };
@@ -116,7 +118,7 @@ function hasAncestor(el: Element, ancestors: Iterable<Element>): boolean {
   return false;
 }
 
-interface Snapshot { element: Element; box: Rect; copy: Element; parent: Element | null; next: Element | null }
+interface Snapshot { element: Element; box: Rect; copy: Element; parent: Element | null; grandparent: Element | null; next: Element | null }
 interface Disclosure { element: Element; height: number; children: Element[]; details: Snapshot[] }
 interface RowSnapshot extends Snapshot { key: string }
 interface Tree { element: Element; rows: RowSnapshot[]; anchorKey: string | null }
@@ -141,6 +143,12 @@ function firstBoxChild(el: Element): Element | null {
   const child = Array.from(el.children)[0];
   if (!child) return null;
   return window.getComputedStyle(child).getPropertyValue('display') === 'contents' ? firstBoxChild(child) : child;
+}
+function panelContent(el: Element): Element | null {
+  return Array.from(el.children).find(child => {
+    const style = window.getComputedStyle(child);
+    return style.getPropertyValue('display') !== 'contents' && style.getPropertyValue('position') !== 'absolute';
+  }) ?? Array.from(el.children)[0] ?? null;
 }
 function tabSlot(tab: Element, scroll: Element): Element {
   let slot = tab;
@@ -242,7 +250,7 @@ function panels(): Map<string, Element> {
 function snapshot(el: Element): Snapshot {
   let slot = el;
   while (slot.parentElement && window.getComputedStyle(slot.parentElement).getPropertyValue('display') === 'contents') slot = slot.parentElement;
-  return { element: el, box: rect(el), copy: el.cloneNode(true), parent: slot.parentElement, next: slot.nextElementSibling };
+  return { element: el, box: rect(el), copy: el.cloneNode(true), parent: slot.parentElement, grandparent: slot.parentElement?.parentElement ?? null, next: slot.nextElementSibling };
 }
 function disclosureFor(target: Element): Element | null {
   const tool = target.closest(TOOL);
@@ -406,30 +414,86 @@ function installWebMotion(): () => void {
     ghosts.add(copy);
     animate(copy, [{ opacity: 1, transform: 'translate(0,0)', clipPath: 'inset(0 0 0 0)' }, { opacity: 0, transform: `translate(${horizontal}px,-3px)`, clipPath: horizontal ? 'inset(0 0 0 0)' : 'inset(0 0 100% 0)' }], () => { copy.remove(); ghosts.delete(copy); }, 0, milliseconds);
   }
+  let diffFrame = 0;
+  let diffTail = false;
+  // DiffSurface debounces ResizeObserver updates by 120ms unless a window
+  // pointer cycle flushes its latest measured width on the next animation
+  // frame. Sync each sidebar animation frame so the diff canvas widens/narrows
+  // with the drawer instead of snapping after it finishes closing.
+  const syncDiffViewport = () => {
+    if (!window.dispatchEvent || !window.Event || !document.body.querySelector('[data-testid="git-diff-canvas-root"]')) return;
+    try {
+      window.dispatchEvent(new window.Event('pointerdown'));
+      window.dispatchEvent(new window.Event('pointercancel'));
+    } catch { /* synthetic window events are optional in non-browser test harnesses */ }
+  };
+  const tickDiff = () => {
+    diffFrame = 0;
+    syncDiffViewport();
+    if (panelEntries.size || panelExits.size) {
+      diffTail = true;
+      diffFrame = window.requestAnimationFrame(tickDiff);
+    } else if (diffTail) {
+      diffTail = false;
+      diffFrame = window.requestAnimationFrame(tickDiff);
+    }
+  };
+  const startDiffSync = () => {
+    diffTail = true;
+    if (diffFrame) return;
+    syncDiffViewport();
+    diffFrame = window.requestAnimationFrame(tickDiff);
+  };
   function revealPanel(el: Element) {
     const width = rect(el).width;
     if (width < 2) return;
-    const content = Array.from(el.children).find(child => rect(child).width > width / 2);
+    const content = Array.from(el.children).find(child => rect(child).width > width / 2) ?? panelContent(el);
     const restoreContent = content ? temporaryStyles(content, { 'min-width': `${width}px` }) : () => {};
     const restore = temporaryStyles(el, { overflow: 'hidden', 'min-width': '0', 'box-sizing': 'border-box', 'flex-shrink': '0' });
     panelEntries.add(el);
+    startDiffSync();
     animate(el, [{ width: '0px', opacity: 0.4 }, { width: `${width}px`, opacity: 1 }], () => { restoreContent(); restore(); panelEntries.delete(el); });
   }
   function hidePanel(before: Snapshot, key: string) {
     const el = before.element;
     if (!el.isConnected) {
-      if (!before.parent?.isConnected) { ghost(before, key === 'left' ? -before.box.width : before.box.width); return; }
       // Explorer is unmounted on close. An inert copy in the original flex
       // slot lets the adjacent panes expand progressively instead of jumping.
       const copy = exitCopy(before);
       const values: Record<string, string> = { display: 'flex', position: 'relative', width: `${before.box.width}px`, height: `${before.box.height}px`, 'min-width': '0', 'flex-shrink': '0', 'box-sizing': 'border-box', overflow: 'hidden', 'pointer-events': 'none' };
       // An !important width would override the Web Animations width frames.
       for (const [property, value] of Object.entries(values)) copy.style.setProperty(property, value, property === 'width' ? '' : 'important');
-      const content = Array.from(copy.children)[0];
-      content?.style.setProperty('min-width', `${before.box.width}px`);
-      before.parent.insertBefore(copy, before.next?.parentElement === before.parent ? before.next : null);
-      ghosts.add(copy);
-      animate(copy, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => { copy.remove(); ghosts.delete(copy); });
+      panelContent(copy)?.style.setProperty('min-width', `${before.box.width}px`);
+      if (before.parent?.isConnected) {
+        before.parent.insertBefore(copy, before.next?.parentElement === before.parent ? before.next : null);
+        ghosts.add(copy);
+        panelExits.add(copy);
+        startDiffSync();
+        animate(copy, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => { copy.remove(); ghosts.delete(copy); panelExits.delete(copy); });
+        return;
+      }
+      if (before.grandparent?.isConnected) {
+        // ChangesSurface unmounts the TreeRail row wrapper when its tree rail
+        // closes, leaving the diff container as the live parent. Hold the rail
+        // slot inside that container so the diff widens smoothly as it closes.
+        const host = before.grandparent;
+        const sibling = firstBoxChild(host);
+        const restoreHost = temporaryStyles(host, { 'flex-direction': 'row' });
+        const restoreSibling = sibling ? temporaryStyles(sibling, { 'min-width': '0' }) : () => {};
+        host.insertBefore(copy, key === 'left' ? host.children[0] ?? null : null);
+        ghosts.add(copy);
+        panelExits.add(copy);
+        startDiffSync();
+        animate(copy, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => {
+          copy.remove();
+          ghosts.delete(copy);
+          panelExits.delete(copy);
+          restoreSibling();
+          restoreHost();
+        });
+        return;
+      }
+      ghost(before, key === 'left' ? -before.box.width : before.box.width);
       return;
     }
     // Left sidebar is retained with display:none. Keep its real layout slot
@@ -437,8 +501,9 @@ function installWebMotion(): () => void {
     panelExits.add(el);
     const restore = temporaryStyles(el, { display: 'flex', overflow: 'hidden', 'min-width': '0', 'box-sizing': 'border-box', 'pointer-events': 'none', 'flex-shrink': '0' });
     el.style.setProperty('display', 'flex', 'important');
-    const content = Array.from(el.children)[0];
+    const content = panelContent(el);
     const restoreContent = content ? temporaryStyles(content, { 'min-width': `${before.box.width}px` }) : () => {};
+    startDiffSync();
     animate(el, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => { restoreContent(); restore(); panelExits.delete(el); });
   }
   function animatePanes(before: Map<string, PaneBox>, after: Map<string, PaneBox>) {
@@ -1427,6 +1492,7 @@ function installWebMotion(): () => void {
     window.clearTimeout(scrollDeadline); scrollDeadline = 0;
     window.cancelAnimationFrame(passiveFrame); passiveFrame = 0; dirty.clear();
     stopAll(); elastic.reset(); elastic.refresh(); updateMotionFlags();
+    window.cancelAnimationFrame(diffFrame); diffFrame = 0; diffTail = false;
     window.cancelAnimationFrame(titleFrame); titleFrame = 0; titleLastTime = 0;
     // Exit copies are unnecessary while no motion is presented. Release
     // their detached DOM and rebuild clean baselines on return.
@@ -1511,6 +1577,7 @@ function installWebMotion(): () => void {
     window.removeEventListener('focus', onWindowFocus);
     reduceMotion.removeEventListener('change', onReduce);
     window.clearTimeout(deadline); window.cancelAnimationFrame(frame); window.cancelAnimationFrame(passiveFrame);
+    window.cancelAnimationFrame(diffFrame); diffFrame = 0; diffTail = false;
     window.cancelAnimationFrame(titleFrame); titleFrame = 0;
     window.clearTimeout(scrollDeadline); dirty.clear();
     workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); fileIcons.clear(); toolIcons.clear(); toolStates.clear(); agentStates.clear();
