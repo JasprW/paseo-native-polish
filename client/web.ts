@@ -180,8 +180,14 @@ function layoutParent(element: Element): Element | null {
   while (parent && window.getComputedStyle(parent).getPropertyValue('display') === 'contents') parent = parent.parentElement;
   return parent;
 }
-function panelOwner(element: Element): Element {
+function panelOwner(element: Element): Element | null {
   if (element.getAttribute('data-testid') !== 'workspace-explorer-sidebar') return element;
+  // Paseo 0.13+ wraps the explorer dock inside MobilePanelOverlay's gesture host;
+  // on desktop (presentation="dock") that outer flex item owns the dock width and
+  // display:none state. On mobile (presentation="overlay") it is position:absolute
+  // and already animated by Reanimated.
+  const host = element.closest('[id^="file-explorer-gesture-host-"]');
+  if (host) return window.getComputedStyle(host).getPropertyValue('position') === 'absolute' ? null : host;
   // Explorer content -> RetainedPanel (flex:1) -> fixed-width dock. Unistyles
   // puts the dock's width in a class, so an inline-style search cannot find it.
   const retained = layoutParent(element);
@@ -219,7 +225,8 @@ function panels(): Map<string, Element> {
     ['changes-rail', '[data-testid="changes-tree-rail-tree"]'],
   ]) {
     const el = all(document.body, selector).find(visible);
-    if (el) result.set(name, panelOwner(el));
+    const owner = el ? panelOwner(el) : null;
+    if (owner) result.set(name, owner);
   }
   // Only the outer width owner animates. A nested Changes rail must travel
   // with its Explorer/sidebar instead of running a second width animation.
@@ -232,7 +239,11 @@ function panels(): Map<string, Element> {
   return result;
 }
 
-function snapshot(el: Element): Snapshot { return { element: el, box: rect(el), copy: el.cloneNode(true), parent: el.parentElement, next: el.nextElementSibling }; }
+function snapshot(el: Element): Snapshot {
+  let slot = el;
+  while (slot.parentElement && window.getComputedStyle(slot.parentElement).getPropertyValue('display') === 'contents') slot = slot.parentElement;
+  return { element: el, box: rect(el), copy: el.cloneNode(true), parent: slot.parentElement, next: slot.nextElementSibling };
+}
 function disclosureFor(target: Element): Element | null {
   const tool = target.closest(TOOL);
   if (tool) {
@@ -1210,7 +1221,7 @@ function installWebMotion(): () => void {
   refreshAmbient(false);
   let treeTarget: Element | null = null;
   const capture = (target: Element | null): Capture => ({
-    panels: new Map(Array.from(panels()).filter(([, el]) => visible(el)).map(([key, el]) => [key, snapshot(el)])),
+    panels: new Map(Array.from(panels()).filter(([, el]) => visible(el) && !panelExits.has(el)).map(([key, el]) => [key, snapshot(el)])),
     panes: paneBoxes(),
     paneAction: Boolean(target?.closest(PANE_ACTION)),
     paneMotion: Boolean(target?.closest(PANE_ACTION)),
@@ -1333,7 +1344,7 @@ function installWebMotion(): () => void {
   let primed: Map<string, Snapshot> | null = null;
   const prime = (event: Event) => {
     if (event.key !== 'Meta' && event.key !== 'Control') return;
-    primed = event.repeat || !canAnimate() ? primed : new Map(Array.from(panels()).filter(([, el]) => visible(el)).map(([key, el]) => [key, snapshot(el)]));
+    primed = event.repeat || !canAnimate() ? primed : new Map(Array.from(panels()).filter(([, el]) => visible(el) && !panelExits.has(el)).map(([key, el]) => [key, snapshot(el)]));
   };
   const unprime: Listener = event => { if (event.key === 'Meta' || event.key === 'Control') primed = null; };
   const begin = (event: Event) => {
