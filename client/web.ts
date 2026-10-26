@@ -809,14 +809,19 @@ function installWebMotion(): () => void {
         // A partially clipped row should never escape the sidebar viewport.
         if (before && before.box.top >= bounds.top && before.box.bottom <= bounds.bottom) ghost(before, -6);
       }
-      let surfaceChannels: [number, number, number] | null = null;
-      for (let at: Element | null = scroll; at; at = at.parentElement) {
+      let sr = 0, sg = 0, sb = 0, rem = 1;
+      for (let at: Element | null = scroll; at && rem > 1e-4; at = at.parentElement) {
         const bg = window.getComputedStyle(at).getPropertyValue('background-color');
-        if (!bg || /^(transparent|rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\))$/i.test(bg)) continue;
-        const parts = bg.match(/\d+/g)?.map(Number);
-        if (parts && parts.length >= 3) { surfaceChannels = [parts[0], parts[1], parts[2]]; break; }
+        const parts = /^rgba?\(([^)]+)\)$/i.exec(bg.trim())?.[1].match(/\d*\.?\d+%?/g);
+        if (!parts || parts.length < 3) continue;
+        const chan = (raw: string, scale: number) => raw.endsWith('%') ? (parseFloat(raw) / 100) * scale : parseFloat(raw);
+        const r = chan(parts[0], 255), g = chan(parts[1], 255), b = chan(parts[2], 255);
+        const a = parts[3] !== undefined ? Math.max(0, Math.min(1, chan(parts[3], 1))) : 1;
+        if (!Number.isFinite(a) || a <= 0) continue;
+        sr += r * a * rem; sg += g * a * rem; sb += b * a * rem;
+        rem *= 1 - a;
       }
-      const [sr, sg, sb] = surfaceChannels ?? [20, 23, 22];
+      sr = Math.round(sr + 20 * rem); sg = Math.round(sg + 23 * rem); sb = Math.round(sb + 22 * rem);
       const dark = (sr * 299 + sg * 587 + sb * 114) / 1000 < 128;
       const [dr, dg, db] = dark ? [Math.min(255, sr + 19), Math.min(255, sg + 19), Math.min(255, sb + 19)] : [sr, sg, sb];
       const [br, bg, bb] = dark ? [Math.min(255, sr + 17), Math.min(255, sg + 20), Math.min(255, sb + 20)] : [Math.max(0, sr - 16), Math.max(0, sg - 16), Math.max(0, sb - 14)];
