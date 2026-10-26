@@ -735,6 +735,55 @@ function installWebMotion(): () => void {
       if (!allowed || !changed) continue;
       const removed = Array.from(old.keys).filter(key => !keys.has(key));
       const added = Array.from(keys).filter(key => !old.keys.has(key));
+      const oldBySection = new Map<string, string[]>();
+      for (const key of old.keys) {
+        const section = old.sections.get(key);
+        if (!section) continue;
+        const list = oldBySection.get(section) ?? [];
+        list.push(key);
+        oldBySection.set(section, list);
+      }
+      const nextBySection = new Map<string, string[]>();
+      for (const key of keys) {
+        const section = sections.get(key);
+        if (!section) continue;
+        const list = nextBySection.get(section) ?? [];
+        list.push(key);
+        nextBySection.set(section, list);
+      }
+      const liftedRows = new Map<string, { top: number; left: number; section: string }>();
+      const liftedSections = new Set<string>();
+      const overflowDisplaced = new Set<string>();
+      for (const [section, nextList] of nextBySection) {
+        const topKey = nextList[0];
+        const topItem = topKey ? anchors.get(topKey) : undefined;
+        if (!topKey || !topItem) continue;
+        const oldList = oldBySection.get(section) ?? [];
+        if (old.keys.has(topKey)) {
+          const oldSection = old.sections.get(topKey);
+          const oldIndex = oldList.indexOf(topKey);
+          const sameSectionResort = oldSection === section && oldIndex > 0
+            && oldList.slice(0, oldIndex).some(k => nextList.includes(k));
+          const crossStatusResort = Boolean(
+            oldSection?.startsWith('sidebar-status-group-rows-')
+            && section.startsWith('sidebar-status-group-rows-')
+            && oldSection !== section,
+          );
+          if (!sameSectionResort && !crossStatusResort) continue;
+          const fallbackKey = [...oldList].reverse().find(k => old.anchors.has(k));
+          const origin = old.anchors.get(topKey) ?? (fallbackKey ? old.anchors.get(fallbackKey) : undefined);
+          if (!origin || origin.top - topItem.top <= 1) continue;
+          liftedRows.set(topKey, { top: origin.top, left: origin.left, section });
+          liftedSections.add(section);
+        } else if (oldList.length > 0 && nextList.length === oldList.length && nextList.includes(oldList[0])) {
+          const displacedKey = [...oldList].reverse().find(k => !keys.has(k));
+          const origin = displacedKey ? old.anchors.get(displacedKey) : undefined;
+          if (!displacedKey || !origin || origin.top - topItem.top <= 1) continue;
+          liftedRows.set(topKey, { top: origin.top, left: origin.left, section });
+          liftedSections.add(section);
+          overflowDisplaced.add(displacedKey);
+        }
+      }
       const exitingProjects = new Set<string>();
       for (const [key, before] of old.projects) if (!projectKeys.has(key)) {
         // A project can disappear from the unpinned list while its workspace
@@ -751,7 +800,7 @@ function installWebMotion(): () => void {
         }
       }
       for (const [key, item] of old.anchors) {
-        if (anchorKeys.has(key) || (item.project && exitingProjects.has(item.project))) continue;
+        if (anchorKeys.has(key) || overflowDisplaced.has(key) || (item.project && exitingProjects.has(item.project))) continue;
         // Only actual removals, including headers, exit. Offscreen movement
         // does not count as removal from the mounted sidebar list.
         if (!removed.includes(key) && !item.shot.element.matches(PROJECT + ', ' + STATUS + ', [data-testid="sidebar-pinned-section-header"]')) continue;
@@ -760,17 +809,68 @@ function installWebMotion(): () => void {
         // A partially clipped row should never escape the sidebar viewport.
         if (before && before.box.top >= bounds.top && before.box.bottom <= bounds.bottom) ghost(before, -6);
       }
+      let surfaceChannels: [number, number, number] | null = null;
+      for (let at: Element | null = scroll; at; at = at.parentElement) {
+        const bg = window.getComputedStyle(at).getPropertyValue('background-color');
+        if (!bg || /^(transparent|rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\))$/i.test(bg)) continue;
+        const parts = bg.match(/\d+/g)?.map(Number);
+        if (parts && parts.length >= 3) { surfaceChannels = [parts[0], parts[1], parts[2]]; break; }
+      }
+      const [sr, sg, sb] = surfaceChannels ?? [20, 23, 22];
+      const dark = (sr * 299 + sg * 587 + sb * 114) / 1000 < 128;
+      const [dr, dg, db] = dark ? [Math.min(255, sr + 19), Math.min(255, sg + 19), Math.min(255, sb + 19)] : [sr, sg, sb];
+      const [br, bg, bb] = dark ? [Math.min(255, sr + 17), Math.min(255, sg + 20), Math.min(255, sb + 20)] : [Math.max(0, sr - 16), Math.max(0, sg - 16), Math.max(0, sb - 14)];
+      const liftDuration = Math.round(duration() * 1.6);
       for (const [key, item] of anchors) {
         const el = item.shot.element;
         if (active.has(el) || hasAncestor(el, active.keys()) || el.style.getPropertyValue('transform')) continue;
-        if (added.includes(key) || !old.anchorKeys.has(key)) {
+        const lifted = liftedRows.get(key);
+        if (lifted) {
+          const dy = lifted.top - item.top;
+          const dx = lifted.left - item.left;
+          const rowBg = window.getComputedStyle(el).getPropertyValue('background-color');
+          const hasRowBg = Boolean(rowBg && !/^(transparent|rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\))$/i.test(rowBg));
+          const startBg = hasRowBg ? rowBg : `rgba(${dr}, ${dg}, ${db}, 0)`;
+          const dragBg = `rgb(${dr}, ${dg}, ${db})`;
+          const blur = dark ? 8 : 16;
+          const alpha = dark ? 0.2 : 0.04;
+          const restShadow = `0 0 0 1px rgba(${br}, ${bg}, ${bb}, 0), 0 4px ${blur}px rgba(0, 0, 0, 0)`;
+          const liftShadow = `0 0 0 1px rgba(${br}, ${bg}, ${bb}, 1), 0 4px ${blur}px rgba(0, 0, 0, ${alpha})`;
+          const cleanups: (() => void)[] = [temporaryStyles(el, { position: 'relative', 'z-index': '3' })];
+          for (let at = el.parentElement; at && at !== scroll; at = at.parentElement) {
+            if (window.getComputedStyle(at).getPropertyValue('display') === 'contents') continue;
+            cleanups.push(temporaryStyles(at, { position: 'relative', 'z-index': '1000' }));
+          }
+          animate(
+            el,
+            [
+              { transform: `translate(${dx}px,${dy}px) scale(1)`, opacity: 1, backgroundColor: startBg, boxShadow: restShadow, offset: 0 },
+              { transform: `translate(${dx}px,${dy}px) scale(1.02)`, opacity: 0.9, backgroundColor: dragBg, boxShadow: liftShadow, offset: 0.18 },
+              { transform: 'translate(0px,0px) scale(1.02)', opacity: 0.9, backgroundColor: dragBg, boxShadow: liftShadow, offset: 0.82 },
+              { transform: 'translate(0px,0px) scale(1)', opacity: 1, backgroundColor: startBg, boxShadow: restShadow, offset: 1 },
+            ],
+            () => { for (const fn of cleanups) fn(); },
+            0,
+            liftDuration,
+          );
+        } else if (added.includes(key) || !old.anchorKeys.has(key)) {
           animate(el, [{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'translateY(0)' }]);
         } else {
           const previous = old.anchors.get(key);
           if (!previous) continue;
           const dy = previous.top - item.top;
           const dx = previous.left - item.left;
-          if (Math.abs(dy) > 1 || Math.abs(dx) > 1) animate(el, [{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'translate(0,0)' }]);
+          if (Math.abs(dy) > 1 || Math.abs(dx) > 1) {
+            const section = sections.get(key);
+            const displacedByLift = Boolean(section && liftedSections.has(section) && dy < -1);
+            animate(
+              el,
+              [{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'translate(0,0)' }],
+              undefined,
+              displacedByLift ? Math.round(liftDuration * 0.14) : 0,
+              displacedByLift ? Math.round(liftDuration * 0.72) : duration(),
+            );
+          }
         }
       }
     }
