@@ -50,6 +50,7 @@ declare const document: {
   body: Element; head: Element;
   hidden: boolean;
   hasFocus(): boolean;
+  querySelector(selector: string): Element | null;
   querySelectorAll(selector: string): ArrayLike<Element>;
   createElement(tag: string): Element;
   addEventListener(type: string, callback: Listener, capture?: boolean): void;
@@ -123,7 +124,10 @@ interface Disclosure { element: Element; height: number; children: Element[]; de
 interface RowSnapshot extends Snapshot { key: string }
 interface Tree { element: Element; rows: RowSnapshot[]; anchorKey: string | null }
 interface PaneBox { element: Element; box: Rect }
-interface Capture { panels: Map<string, Snapshot>; panes: Map<string, PaneBox>; paneAction: boolean; paneMotion: boolean; disclosure: Disclosure | null; tree: Tree | null }
+// Scroll offsets of a panel's lists, in document order: a clone keeps none.
+// Unistyles' stylesheet text is kept too, see restoreUnistyles.
+interface PanelSnapshot extends Snapshot { scrolls: [number, number][]; css: string }
+interface Capture { panels: Map<string, PanelSnapshot>; panes: Map<string, PaneBox>; paneAction: boolean; paneMotion: boolean; disclosure: Disclosure | null; tree: Tree | null }
 const PANE = '[data-testid^="workspace-pane-"]';
 const PANE_ACTION = '[data-testid="workspace-maximize-pane"], [data-testid="workspace-restore-pane"]';
 const TAB = '[data-testid^="workspace-tab-"][role="button"][aria-selected]';
@@ -252,6 +256,49 @@ function snapshot(el: Element): Snapshot {
   while (slot.parentElement && window.getComputedStyle(slot.parentElement).getPropertyValue('display') === 'contents') slot = slot.parentElement;
   return { element: el, box: rect(el), copy: el.cloneNode(true), parent: slot.parentElement, grandparent: slot.parentElement?.parentElement ?? null, next: slot.nextElementSibling };
 }
+const PANEL_SCROLL = WORKSPACE_SCROLL + ', ' + FILE_TREE + ', ' + CHANGE_TREE;
+const UNISTYLES_SHEET = 'style#unistyles-web';
+const UNISTYLES_CLASS = /\bunistyles_[a-z0-9]+\b/g;
+function panelSnapshot(el: Element): PanelSnapshot {
+  return {
+    ...snapshot(el),
+    scrolls: all(el, PANEL_SCROLL).map(list => [list.scrollTop, list.scrollLeft]),
+    css: document.querySelector(UNISTYLES_SHEET)?.textContent ?? '',
+  };
+}
+// Unistyles (web) writes every style into one <style> as content-hashed
+// classes, and deletes a class's rule in a microtask once no mounted element
+// uses it. A close commit unmounts rows (the sidebar's 36px traffic-light row
+// among them) before our frame copies the panel, so the copy would lay out
+// without them. Re-add, from the pre-close sheet, the rules for classes the
+// copy uses that no live element does. A content hash never changes meaning,
+// so a duplicate of a rule Unistyles re-adds later is identical.
+function restoreUnistyles(copy: Element, css: string): Element | null {
+  if (!css) return null;
+  const missing = new Set<string>();
+  for (const el of [copy, ...all(copy, '[class*="unistyles_"]')]) {
+    for (const name of (el.getAttribute('class') ?? '').match(UNISTYLES_CLASS) ?? []) {
+      if (!missing.has(name) && !document.querySelector('.' + name)) missing.add(name);
+    }
+  }
+  if (!missing.size) return null;
+  // The sheet is generated flat: `.cls{...}` rules, optionally inside one
+  // level of `@media ...{ }`. Property values never contain braces.
+  let text = '', media = '', inMedia = '';
+  for (const match of css.matchAll(/([^{}@]+)\{([^{}]*)\}|(@[^{}]+)\{|\}/g)) {
+    if (match[3] !== undefined) { media = match[3]; inMedia = ''; continue; }
+    if (match[1] === undefined) { if (media && inMedia) text += `${media}{${inMedia}}`; media = ''; continue; }
+    const names = match[1].match(UNISTYLES_CLASS);
+    if (!names?.some(name => missing.has(name))) continue;
+    if (media) inMedia += match[0]; else text += match[0];
+  }
+  if (!text) return null;
+  const style = document.createElement('style');
+  style.setAttribute('data-native-polish-style', 'exit');
+  style.textContent = text;
+  document.head.appendChild(style);
+  return style;
+}
 function disclosureFor(target: Element): Element | null {
   const tool = target.closest(TOOL);
   if (tool) {
@@ -306,7 +353,7 @@ function captureTree(target: Element): Tree | null {
 }
 
 // Keep in step with package.json. leaseMotion uses it to pick which bundle owns the window.
-const VERSION = '0.4.16';
+const VERSION = '0.4.17';
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
@@ -340,6 +387,8 @@ function installWebMotion(): () => void {
   let composing = false;
   const panelExits = new Set<Element>();
   const panelEntries = new Set<Element>();
+  // Retained panel -> its shrinking exit copy.
+  const panelCopies = new Map<Element, Element>();
   const active = new Map<Element, () => void>();
   const ghosts = new Set<Element>();
   let edgePeek: ReturnType<typeof installEdgePeek> | null = null;
@@ -454,57 +503,60 @@ function installWebMotion(): () => void {
     startDiffSync();
     animate(el, [{ width: '0px', opacity: 0.4 }, { width: `${width}px`, opacity: 1 }], () => { restoreContent(); restore(); panelEntries.delete(el); });
   }
-  function hidePanel(before: Snapshot, key: string) {
+  function hidePanel(before: PanelSnapshot, key: string) {
     const el = before.element;
-    if (!el.isConnected) {
-      // Explorer is unmounted on close. An inert copy in the original flex
-      // slot lets the adjacent panes expand progressively instead of jumping.
-      const copy = exitCopy(before);
-      const values: Record<string, string> = { display: 'flex', position: 'relative', width: `${before.box.width}px`, height: `${before.box.height}px`, 'min-width': '0', 'flex-shrink': '0', 'box-sizing': 'border-box', overflow: 'hidden', 'pointer-events': 'none' };
-      // An !important width would override the Web Animations width frames.
-      for (const [property, value] of Object.entries(values)) copy.style.setProperty(property, value, property === 'width' ? '' : 'important');
-      panelContent(copy)?.style.setProperty('min-width', `${before.box.width}px`);
-      if (before.parent?.isConnected) {
-        before.parent.insertBefore(copy, before.next?.parentElement === before.parent ? before.next : null);
-        ghosts.add(copy);
-        panelExits.add(copy);
-        startDiffSync();
-        animate(copy, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => { copy.remove(); ghosts.delete(copy); panelExits.delete(copy); });
-        return;
-      }
-      if (before.grandparent?.isConnected) {
-        // ChangesSurface unmounts the TreeRail row wrapper when its tree rail
-        // closes, leaving the diff container as the live parent. Hold the rail
-        // slot inside that container so the diff widens smoothly as it closes.
-        const host = before.grandparent;
-        const sibling = firstBoxChild(host);
-        const restoreHost = temporaryStyles(host, { 'flex-direction': 'row' });
-        const restoreSibling = sibling ? temporaryStyles(sibling, { 'min-width': '0' }) : () => {};
-        host.insertBefore(copy, key === 'left' ? host.children[0] ?? null : null);
-        ghosts.add(copy);
-        panelExits.add(copy);
-        startDiffSync();
-        animate(copy, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => {
-          copy.remove();
-          ghosts.delete(copy);
-          panelExits.delete(copy);
-          restoreSibling();
-          restoreHost();
-        });
-        return;
-      }
+    // Explorer is unmounted on close. The left sidebar is retained with
+    // display:none, but it re-renders first: once it no longer owns the
+    // top-left window corner, its traffic-light row is gone and every row
+    // sits higher. Either way, shrink an inert copy of the pre-close layout in
+    // the original flex slot so adjacent panes still expand progressively.
+    let slot: Element | null = null;
+    if (el.isConnected) {
+      slot = el;
+      while (slot.parentElement && slot.parentElement !== before.parent) slot = slot.parentElement;
+      if (slot.parentElement !== before.parent) slot = null;
+    }
+    if (el.isConnected && !slot) return;
+    const lists = all(before.copy, PANEL_SCROLL);
+    const copy = exitCopy(before);
+    const values: Record<string, string> = { display: 'flex', position: 'relative', width: `${before.box.width}px`, height: `${before.box.height}px`, 'min-width': '0', 'flex-shrink': '0', 'box-sizing': 'border-box', overflow: 'hidden', 'pointer-events': 'none' };
+    // An !important width would override the Web Animations width frames.
+    for (const [property, value] of Object.entries(values)) copy.style.setProperty(property, value, property === 'width' ? '' : 'important');
+    panelContent(copy)?.style.setProperty('min-width', `${before.box.width}px`);
+    // Before insertion: the copy itself must not count as a live user of a class.
+    const rules = restoreUnistyles(copy, before.css);
+    let cleanupHost = () => {};
+    if (slot && before.parent) before.parent.insertBefore(copy, slot);
+    else if (before.parent?.isConnected) before.parent.insertBefore(copy, before.next?.parentElement === before.parent ? before.next : null);
+    else if (before.grandparent?.isConnected) {
+      // ChangesSurface unmounts the TreeRail row wrapper when its tree rail
+      // closes, leaving the diff container as the live parent. Hold the rail
+      // slot inside that container so the diff widens smoothly as it closes.
+      const host = before.grandparent;
+      const sibling = firstBoxChild(host);
+      const restoreHost = temporaryStyles(host, { 'flex-direction': 'row' });
+      const restoreSibling = sibling ? temporaryStyles(sibling, { 'min-width': '0' }) : () => {};
+      host.insertBefore(copy, key === 'left' ? host.children[0] ?? null : null);
+      cleanupHost = () => { restoreSibling(); restoreHost(); };
+    } else {
+      rules?.remove();
       ghost(before, key === 'left' ? -before.box.width : before.box.width);
       return;
     }
-    // Left sidebar is retained with display:none. Keep its real layout slot
-    // for the duration of the exit, while preserving host aria-hidden/input state.
-    panelExits.add(el);
-    const restore = temporaryStyles(el, { display: 'flex', overflow: 'hidden', 'min-width': '0', 'box-sizing': 'border-box', 'pointer-events': 'none', 'flex-shrink': '0' });
-    el.style.setProperty('display', 'flex', 'important');
-    const content = panelContent(el);
-    const restoreContent = content ? temporaryStyles(content, { 'min-width': `${before.box.width}px` }) : () => {};
+    lists.forEach((list, index) => {
+      const [top, left] = before.scrolls[index] ?? [0, 0];
+      list.scrollTop = top; list.scrollLeft = left;
+    });
+    ghosts.add(copy);
+    panelExits.add(copy);
+    // The retained element stays hidden by the host. Track it so ambient
+    // list/pane motion stays out of the exit, and a reopen can drop the copy.
+    if (slot) { panelExits.add(el); panelCopies.set(el, copy); }
     startDiffSync();
-    animate(el, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => { restoreContent(); restore(); panelExits.delete(el); });
+    animate(copy, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => {
+      copy.remove(); ghosts.delete(copy); panelExits.delete(copy); rules?.remove(); cleanupHost();
+      if (panelCopies.get(el) === copy) { panelCopies.delete(el); panelExits.delete(el); }
+    });
   }
   function animatePanes(before: Map<string, PaneBox>, after: Map<string, PaneBox>) {
     let changed = false;
@@ -1390,8 +1442,9 @@ function installWebMotion(): () => void {
   updateMotionFlags();
   refreshAmbient(false);
   let treeTarget: Element | null = null;
+  const visiblePanels = () => new Map(Array.from(panels()).filter(([, el]) => visible(el) && !panelExits.has(el)).map(([key, el]) => [key, panelSnapshot(el)]));
   const capture = (target: Element | null): Capture => ({
-    panels: new Map(Array.from(panels()).filter(([, el]) => visible(el) && !panelExits.has(el)).map(([key, el]) => [key, snapshot(el)])),
+    panels: visiblePanels(),
     panes: paneBoxes(),
     paneAction: Boolean(target?.closest(PANE_ACTION)),
     paneMotion: Boolean(target?.closest(PANE_ACTION)),
@@ -1406,12 +1459,17 @@ function installWebMotion(): () => void {
     const currentPanes = paneBoxes();
     // Save the committed layout before our width animations change its rects.
     // Retain entry snapshots while their first frame temporarily has width 0.
-    const nextPanels = new Map<string, Snapshot>();
+    // A retained panel reopened mid-exit drops its shrinking copy first.
+    for (const el of currentPanels.values()) if (visible(el)) {
+      const copy = panelCopies.get(el);
+      if (copy) active.get(copy)?.();
+    }
+    const nextPanels = new Map<string, PanelSnapshot>();
     for (const [key, el] of currentPanels) {
       if (panelExits.has(el)) continue;
       const old = pending.panels.get(key);
       if (panelEntries.has(el) && old?.element === el) nextPanels.set(key, old);
-      else if (visible(el)) nextPanels.set(key, old?.element === el ? old : snapshot(el));
+      else if (visible(el)) nextPanels.set(key, old?.element === el ? old : panelSnapshot(el));
     }
     if (preferences.sidebars) {
       for (const [key, before] of pending.panels) {
@@ -1511,10 +1569,10 @@ function installWebMotion(): () => void {
   // The host's shortcut listener precedes ours on window capture, and React
   // commits its sidebar state in a microtask before our listener runs. Take
   // the sidebar baseline when the modifier goes down, before B/E arrives.
-  let primed: Map<string, Snapshot> | null = null;
+  let primed: Map<string, PanelSnapshot> | null = null;
   const prime = (event: Event) => {
     if (event.key !== 'Meta' && event.key !== 'Control') return;
-    primed = event.repeat || !canAnimate() ? primed : new Map(Array.from(panels()).filter(([, el]) => visible(el) && !panelExits.has(el)).map(([key, el]) => [key, snapshot(el)]));
+    primed = event.repeat || !canAnimate() ? primed : visiblePanels();
   };
   const unprime: Listener = event => { if (event.key === 'Meta' || event.key === 'Control') primed = null; };
   const begin = (event: Event) => {
