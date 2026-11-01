@@ -3,6 +3,7 @@ import { defaults, getPreferences, setPreferences, subscribePreferences } from "
 import { installElasticScroll } from "./elastic-scroll";
 import { installEdgePeek } from "./edge-peek";
 import { leaseMotion } from "./motion-runtime";
+import { cascadeDelays } from "./sidebar-cascade";
 import { isChangeTreeRowTestId, treeMotionOwners, treeRowTranslation, treeRowsAfterAnchor } from "./tree-motion";
 
 /* Desktop/Web adapter for Paseo 0.11.2. Host DOM is not a public plugin API.
@@ -106,6 +107,15 @@ const TITLE_EXCLUDED = '[role="button"],[role="menuitem"],svg';
 const TITLE_REVEAL_HORIZON_MS = 150;
 const PREF_KEY = 'paseo-native-polish:preferences:v1';
 const EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
+// A slight overshoot (about 1px on the entrance offset) keeps cascading
+// sidebar items lively without reading as a bounce.
+const CASCADE_EASING = 'cubic-bezier(0.34, 1.32, 0.64, 1)';
+// Sidebar items that enter one by one when a sidebar opens. RN web Text
+// renders as div[dir="auto"], which covers section titles; only the outermost
+// match animates, so a row's own buttons and labels travel with it.
+const CASCADE_ITEM = '[data-testid^="sidebar-workspace-row-"], [data-testid^="sidebar-project-row-"], [data-testid="sidebar-pinned-section-header"], '
+  + FILE_ROW + ', ' + CHANGE_ROW + ', '
+  + 'button, a, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="treeitem"], [dir="auto"]';
 const all = (root: Element, selector: string) => Array.from(root.querySelectorAll(selector));
 const rect = (el: Element) => el.getBoundingClientRect();
 const visible = (el: Element) => {
@@ -403,11 +413,11 @@ function installWebMotion(): () => void {
     for (const ghost of ghosts) ghost.remove();
     ghosts.clear();
   };
-  function animate(el: Element, frames: Record<string, string | number>[], cleanup?: () => void, delay = 0, milliseconds = duration()) {
+  function animate(el: Element, frames: Record<string, string | number>[], cleanup?: () => void, delay = 0, milliseconds = duration(), easing = EASING) {
     active.get(el)?.();
     if (!canAnimate() || typeof el.animate !== 'function') { cleanup?.(); return; }
     let animation: Animation;
-    try { animation = el.animate(frames, { duration: milliseconds, easing: EASING, fill: 'both', delay }); }
+    try { animation = el.animate(frames, { duration: milliseconds, easing, fill: 'both', delay }); }
     catch { cleanup?.(); return; }
     let finished = false;
     const stop = () => {
@@ -493,9 +503,47 @@ function installWebMotion(): () => void {
     syncDiffViewport();
     diffFrame = window.requestAnimationFrame(tickDiff);
   };
-  function revealPanel(el: Element) {
+  // The Explorer is a pane that can host any panel, including terminals and
+  // chats. Only its tab rail and Files/Changes trees cascade; other panel
+  // content appears with the drawer. Fail closed if the dock is not found.
+  function cascadeRoots(el: Element, key: string): Element[] {
+    if (key === 'left') return [el];
+    const dock = el.matches('[data-testid="workspace-explorer-sidebar"]') ? el : el.querySelector('[data-testid="workspace-explorer-sidebar"]');
+    const rail = dock?.querySelector(TAB_ROW) ? Array.from(dock.children).find(child => child.querySelector(TAB_ROW)) : null;
+    return [...(rail ? [rail] : []), ...all(el, FILE_TREE + ', ' + CHANGE_TREE)];
+  }
+  // Measured before the width animation starts, while every item still has its
+  // committed position. Bounded to the visible part of the sidebar.
+  function cascadePanel(el: Element, key: string) {
+    const panel = rect(el);
+    const top = Math.max(panel.top, 0), bottom = Math.min(panel.bottom, window.innerHeight);
+    const candidates = cascadeRoots(el, key).flatMap(root => all(root, CASCADE_ITEM)).filter(item => {
+      if (item.closest('[data-native-polish-ghost]') || active.has(item)) return false;
+      const r = rect(item);
+      return r.width > 1 && r.height > 1 && r.height < 96 && r.bottom > top && r.top < bottom && r.right > panel.left && r.left < panel.right;
+    });
+    const owners = new Set(candidates);
+    const items = candidates.filter(item => {
+      for (let parent = item.parentElement; parent && parent !== el; parent = parent.parentElement) if (owners.has(parent)) return false;
+      return true;
+    }).slice(0, 60);
+    if (!items.length) return;
+    const quick = getPreferences().pace === 'quick';
+    const edge = key === 'left' ? 'left' : 'right';
+    const delays = cascadeDelays(items.map(rect), quick ? { lead: 20, step: 14, spread: 150 } : { lead: 40, step: 20, spread: 220 }, edge);
+    let remaining = items.length;
+    // Workspace baselines taken mid-entrance keep their previous snapshot;
+    // rebase once every item has settled at its real position.
+    const settled = () => { if (--remaining === 0 && !disposed) scheduleAmbient(edge === 'left' ? ['workspaces'] : ['tabs', 'files']); };
+    // Items slide in from the sidebar's opening edge. The independent
+    // translate property composes with host and virtualizer transforms.
+    const from = edge === 'left' ? '-12px 0' : '12px 0';
+    items.forEach((item, index) => animate(item, [{ opacity: 0, translate: from }, { opacity: 1, translate: '0 0' }], settled, delays[index], quick ? 220 : 300, CASCADE_EASING));
+  }
+  function revealPanel(el: Element, key: string) {
     const width = rect(el).width;
     if (width < 2) return;
+    if (key === 'left' || key === 'explorer' || key === 'explorer-dock') cascadePanel(el, key);
     const content = Array.from(el.children).find(child => rect(child).width > width / 2) ?? panelContent(el);
     const restoreContent = content ? temporaryStyles(content, { 'min-width': `${width}px` }) : () => {};
     const restore = temporaryStyles(el, { overflow: 'hidden', 'min-width': '0', 'box-sizing': 'border-box', 'flex-shrink': '0' });
@@ -1477,7 +1525,7 @@ function installWebMotion(): () => void {
         if ((!after || !visible(after)) && !panelExits.has(before.element) && !panelEntries.has(before.element)) hidePanel(before, key);
       }
       for (const [key, after] of currentPanels) if (visible(after) && !pending.panels.has(key)) {
-        if (!panelExits.has(after) && !panelEntries.has(after)) revealPanel(after);
+        if (!panelExits.has(after) && !panelEntries.has(after)) revealPanel(after, key);
       }
     }
     // FLIP runs once per maximize/restore commit. Reading transformed rects

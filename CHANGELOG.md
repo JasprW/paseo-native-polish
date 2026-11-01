@@ -2,6 +2,7 @@
 
 ## 0.4.17 · 2026-11-01
 
+- Cascade sidebar items in when a sidebar opens. Navigation rows, section titles, projects, workspaces and footer buttons fade and slide in one after another, top to bottom and left to right within a row, so the sidebar reads as unfolding rather than appearing at once. The Explorer does the same for its tabs and Files/Changes tree rows, mirrored to slide in from the right; other panels it hosts, such as terminals, appear with the drawer. Long lists compress the stagger so the last visible row still starts within about a quarter second. It uses the sidebar motion setting and respects Reduce Motion.
 - Keep the left sidebar's rows aligned while it collapses. On macOS the sidebar drops its traffic-light row and the styles for it before it is hidden, so navigation rows and workspaces jumped up mid-animation. The exit now shrinks a copy of the open layout with its styles and scroll position intact.
 
 ## 0.4.16 · 2026-10-21

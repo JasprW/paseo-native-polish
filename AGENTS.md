@@ -15,6 +15,7 @@ The one exception is `README.zh-CN.md`, the Chinese translation of the README. K
 | `index.client.tsx` | Client entry: registers the settings screen and Command Center item, then starts motion. |
 | `client/web.ts` | DOM motion adapter: captures, sidebars, panes, tabs, trees, overlays, workspace rows. |
 | `client/edge-peek.ts` | Desktop hidden-sidebar edge preview. |
+| `client/sidebar-cascade.ts` | Stagger timing for the sidebar item cascade on open. |
 | `client/elastic-scroll.ts` | Damped edge rebound for scroll surfaces. |
 | `client/motion-runtime.ts` | Hands the single window motion owner to the highest connected plugin version. |
 | `client/preferences.ts`, `client/settings.tsx` | Shared preference store and settings UI. |
@@ -29,6 +30,7 @@ npm ci --ignore-scripts   # first time only
 npm run typecheck
 npm run test:motion-runtime
 npm run test:tree-motion
+npm run test:sidebar-cascade
 ```
 
 CI only runs the typecheck, so run the tests locally. Static checks do not confirm motion; for behavior changes, reload the plugin and check the interaction in the desktop app (see Verifying below). Add or extend a test in `tests/` when logic can be exercised without a real DOM.
