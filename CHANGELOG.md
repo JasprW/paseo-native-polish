@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.17 · 2026-11-01
+
+- Keep the left sidebar's rows aligned while it collapses. On macOS the sidebar drops its traffic-light row and the styles for it before it is hidden, so navigation rows and workspaces jumped up mid-animation. The exit now shrinks a copy of the open layout with its styles and scroll position intact.
+
 ## 0.4.16 · 2026-10-21
 
 - Stop applying overlay entrance and exit animation to hover tooltips. Tooltip text now follows Paseo's own hover lifecycle instead of flashing on pointer enter or leave. Thanks to @squizzi for the fix in #1.
