@@ -553,11 +553,25 @@ function installWebMotion(): () => void {
   }
   function hidePanel(before: PanelSnapshot, key: string) {
     const el = before.element;
-    // Explorer is unmounted on close. The left sidebar is retained with
-    // display:none, but it re-renders first: once it no longer owns the
-    // top-left window corner, its traffic-light row is gone and every row
-    // sits higher. Either way, shrink an inert copy of the pre-close layout in
-    // the original flex slot so adjacent panes still expand progressively.
+    if (el.isConnected && key !== 'left') {
+      // The Explorer dock is retained with display:none and keeps its layout
+      // when it closes. Animate the real element for the duration of the exit:
+      // a copy would lose canvas pixels (diff, terminal) and clone webviews.
+      panelExits.add(el);
+      const restore = temporaryStyles(el, { display: 'flex', overflow: 'hidden', 'min-width': '0', 'box-sizing': 'border-box', 'pointer-events': 'none', 'flex-shrink': '0' });
+      el.style.setProperty('display', 'flex', 'important');
+      const content = panelContent(el);
+      const restoreContent = content ? temporaryStyles(content, { 'min-width': `${before.box.width}px` }) : () => {};
+      startDiffSync();
+      animate(el, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => { restoreContent(); restore(); panelExits.delete(el); });
+      return;
+    }
+    // An unmounted Explorer (older Paseo, or the Changes rail) leaves only its
+    // slot. The retained left sidebar re-renders before Paseo hides it: once it
+    // no longer owns the top-left window corner, its traffic-light row is gone
+    // and every row sits higher. Either way, shrink an inert copy of the
+    // pre-close layout in the original flex slot so adjacent panes still expand
+    // progressively.
     let slot: Element | null = null;
     if (el.isConnected) {
       slot = el;
