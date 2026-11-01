@@ -448,7 +448,9 @@ function installWebMotion(): () => void {
     };
   }
   function exitCopy(before: Snapshot): Element {
-    const copy = before.copy;
+    return inertCopy(before.copy);
+  }
+  function inertCopy(copy: Element): Element {
     copy.setAttribute('data-native-polish-ghost', '');
     copy.setAttribute('aria-hidden', 'true');
     copy.setAttribute('inert', '');
@@ -1567,6 +1569,100 @@ function installWebMotion(): () => void {
     else layoutPolling = 0;
   };
   const schedule = () => { if (pending && canAnimate() && !frame) frame = window.requestAnimationFrame(flush); };
+  // Holding Cmd/Ctrl swaps each workspace row's trailing diff stat or
+  // timestamp for its shortcut number once the host's hold delay passes. The
+  // host mounts an absolutely positioned, pointer-events:none overlay holding
+  // only that number and hides the trailing content with opacity 0 in the same
+  // commit; releasing the modifier reverses both at once. Roll the two past
+  // each other like a changing counter: the outgoing value leaves upward on
+  // press and the badge drops away on release.
+  interface ShortcutBadge { copy: Element; css: string; trailing: Element | null; shown: number }
+  const shortcutBadges = new Map<Element, ShortcutBadge>();
+  const badgeDuration = () => Math.round(duration() * .7);
+  function isShortcutBadge(node: Element): boolean {
+    if (node.nodeType !== 1 || node.getAttribute('data-native-polish-ghost') !== null) return false;
+    const badge = node.children.length === 1 ? node.children[0] : null;
+    const label = badge?.children.length === 1 ? badge.children[0] : null;
+    if (!label || label.children.length || !/^\d{1,2}$/.test(label.textContent?.trim() ?? '')) return false;
+    const style = window.getComputedStyle(node);
+    return style.getPropertyValue('position') === 'absolute' && style.getPropertyValue('pointer-events') === 'none';
+  }
+  // The trailing slot ends the title line at the row's right edge. Only a text
+  // there that the same commit just hid counts; anything else fails closed.
+  function hiddenTrailing(content: Element, badge: Element): Element | null {
+    if (!content.closest(WORKSPACE_ROW)) return null;
+    const box = rect(content);
+    for (const text of all(content, '[dir="auto"]').slice(0, 16)) {
+      const r = rect(text);
+      if (r.right < box.right - 120 || r.top > box.top + 24) continue;
+      let hidden: Element | null = null;
+      for (let el: Element | null = text; el && el !== content; el = el.parentElement) {
+        if (el === badge) { hidden = null; break; }
+        if (window.getComputedStyle(el).getPropertyValue('opacity') === '0') hidden = el;
+      }
+      if (hidden) return hidden;
+    }
+    return null;
+  }
+  function showShortcutBadges(nodes: Element[]) {
+    for (const badge of Array.from(shortcutBadges.keys())) if (!badge.isConnected) shortcutBadges.delete(badge);
+    if (!canAnimate() || !getPreferences().sidebars) return;
+    const milliseconds = badgeDuration();
+    let css: string | null = null;
+    for (const node of nodes) {
+      const content = node.parentElement;
+      const scroll = content?.closest(WORKSPACE_SCROLL);
+      if (!content || !scroll) continue;
+      const r = rect(node), view = rect(scroll);
+      if (r.width < 2 || r.bottom <= view.top || r.top >= view.bottom) continue;
+      // Unistyles drops the badge's rules once every badge unmounts, so keep
+      // a copy of the sheet taken while they are mounted for the release copies.
+      css ??= document.querySelector(UNISTYLES_SHEET)?.textContent ?? '';
+      const trailing = hiddenTrailing(content, node);
+      shortcutBadges.set(node, { copy: node.cloneNode(true), css, trailing, shown: Date.now() });
+      animate(node, [{ opacity: 0, translate: '0 4px', scale: .9 }, { opacity: 1, translate: '0 0', scale: 1 }], undefined, 0, milliseconds);
+      if (!trailing) continue;
+      // A quick re-press can catch the value still rolling back in.
+      const from = active.has(trailing) ? window.getComputedStyle(trailing).getPropertyValue('opacity') || '1' : '1';
+      animate(trailing, [{ opacity: from, translate: '0 0' }, { opacity: 0, translate: '0 -4px' }], undefined, 0, milliseconds);
+    }
+  }
+  function hideShortcutBadges(nodes: Element[], parent: Element) {
+    const milliseconds = badgeDuration();
+    const allow = canAnimate() && getPreferences().sidebars && parent.isConnected && visible(parent);
+    const exits: { copy: Element; sheet: Element | null; from: number }[] = [];
+    for (const node of nodes) {
+      const state = shortcutBadges.get(node)!;
+      shortcutBadges.delete(node);
+      // The removed badge cannot be measured; estimate how far a still-running
+      // entrance had faded in.
+      const from = active.has(node) ? Math.min(1, (Date.now() - state.shown) / milliseconds) : 1;
+      active.get(node)?.();
+      if (!allow) continue;
+      if (state.trailing?.isConnected) {
+        const trailingFrom = active.has(state.trailing) ? window.getComputedStyle(state.trailing).getPropertyValue('opacity') || '0' : '0';
+        animate(state.trailing, [{ opacity: trailingFrom, translate: '0 -4px' }, { opacity: 1, translate: '0 0' }], undefined, 0, milliseconds);
+      }
+      // Restore rules before inserting: a copy in the document already counts
+      // as a live user of its classes.
+      exits.push({ copy: inertCopy(state.copy), sheet: restoreUnistyles(state.copy, state.css), from });
+    }
+    for (const { copy, sheet, from } of exits) {
+      if (from <= 0) { sheet?.remove(); continue; }
+      parent.appendChild(copy);
+      ghosts.add(copy);
+      animate(copy, [{ opacity: from, translate: '0 0', scale: 1 }, { opacity: 0, translate: '0 4px', scale: .9 }], () => { copy.remove(); ghosts.delete(copy); sheet?.remove(); }, 0, milliseconds);
+    }
+  }
+  // Badge-only commits are handled here and skip the workspace layout scan.
+  function updateShortcutBadges(record: Mutation, target: Element): boolean {
+    if (!target.closest(WORKSPACE_SCROLL)) return false;
+    const added = Array.from(record.addedNodes).filter(isShortcutBadge);
+    const removed = Array.from(record.removedNodes).filter(node => shortcutBadges.has(node));
+    if (added.length) showShortcutBadges(added);
+    if (removed.length) hideShortcutBadges(removed, target);
+    return added.length + removed.length > 0 && added.length + removed.length === record.addedNodes.length + record.removedNodes.length;
+  }
   const observer = new MutationObserver(records => {
     if (disposed || suspended) return;
     for (const record of records) {
@@ -1583,6 +1679,7 @@ function installWebMotion(): () => void {
       if (structural) {
         const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
         if (nodes.length && nodes.every(node => node.nodeType === 1 && (node.getAttribute('data-native-polish-ghost') !== null || node.getAttribute('data-native-polish-peek-trigger') !== null))) continue;
+        if (updateShortcutBadges(record, target)) continue;
       }
       // Offset/clip/translate writes belong solely to the elastic adapter.
       // Host spinner leaf styles likewise do not invalidate whole layouts.
@@ -1716,7 +1813,7 @@ function installWebMotion(): () => void {
     suspended = true; composing = false; clearCapture();
     window.clearTimeout(scrollDeadline); scrollDeadline = 0;
     window.cancelAnimationFrame(passiveFrame); passiveFrame = 0; dirty.clear();
-    stopAll(); elastic.reset(); elastic.refresh(); updateMotionFlags();
+    stopAll(); shortcutBadges.clear(); elastic.reset(); elastic.refresh(); updateMotionFlags();
     window.cancelAnimationFrame(diffFrame); diffFrame = 0; diffTail = false;
     window.cancelAnimationFrame(titleFrame); titleFrame = 0; titleLastTime = 0;
     // Exit copies are unnecessary while no motion is presented. Release
@@ -1806,7 +1903,7 @@ function installWebMotion(): () => void {
     window.cancelAnimationFrame(titleFrame); titleFrame = 0;
     window.clearTimeout(scrollDeadline); dirty.clear();
     workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); fileIcons.clear(); toolIcons.clear(); toolStates.clear(); agentStates.clear();
-    workspaceMeta.clear(); workspaceTitleBaseline.clear(); removeTitleCovers(); titleReveals.clear(); titleRevealKeys.clear();
+    workspaceMeta.clear(); workspaceTitleBaseline.clear(); removeTitleCovers(); titleReveals.clear(); titleRevealKeys.clear(); shortcutBadges.clear();
     pending = null; treeTarget = null; stopAll();
   };
 }

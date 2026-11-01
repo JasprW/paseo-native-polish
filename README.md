@@ -8,7 +8,7 @@ Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures tra
 
 | Area | Behavior |
 | --- | --- |
-| Sidebars | Animate left sidebar and Explorer expansion/collapse, including adjacent pane resizing. Opening a sidebar cascades its visible items in, top to bottom and outward from its opening edge: left to right for the left sidebar, right to left for the Explorer’s tabs and Files/Changes trees. Workspace rows fade in on creation and out on archive; neighboring rows move into place. |
+| Sidebars | Animate left sidebar and Explorer expansion/collapse, including adjacent pane resizing. Opening a sidebar cascades its visible items in, top to bottom and outward from its opening edge: left to right for the left sidebar, right to left for the Explorer’s tabs and Files/Changes trees. Workspace rows fade in on creation and out on archive; neighboring rows move into place. Holding Cmd/Ctrl rolls each row's diff stat or timestamp up into its shortcut number, and releasing rolls it back. |
 | Edge preview | Hover at a hidden desktop sidebar’s window edge for a temporary, interactive overlay. Leaving restores the closed state without resizing the canvas. |
 | Panes | Animate split, close, maximize and restore. |
 | Tabs | Animate opening, closing and reordering; transition selection colors. |
