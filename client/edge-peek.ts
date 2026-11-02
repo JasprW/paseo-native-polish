@@ -1,12 +1,12 @@
 /* Paseo 0.11.2 desktop DOM adapter. Open real host panels via their controls;
  * take them out of flex layout before opening, then restore the closed state.
  * No cloned interactive UI, React internals, reparenting or cancelled input. */
-interface Style { getPropertyValue(key: string): string; setProperty(key: string, value: string): void; removeProperty(key: string): void }
+interface Style { getPropertyValue(key: string): string; getPropertyPriority(key: string): string; setProperty(key: string, value: string, priority?: string): void; removeProperty(key: string): void }
 interface Rect { left: number; top: number; right: number; bottom: number; width: number; height: number }
 interface Element {
   nodeType: number; parentElement: Element | null; nextElementSibling: Element | null; isConnected: boolean; style: Style; textContent: string | null;
   getAttribute(key: string): string | null; setAttribute(key: string, value: string): void; removeAttribute(key: string): void;
-  matches(selector: string): boolean; closest(selector: string): Element | null; querySelector(selector: string): Element | null;
+  matches(selector: string): boolean; closest(selector: string): Element | null; querySelector(selector: string): Element | null; querySelectorAll(selector: string): ArrayLike<Element>;
   addEventListener(type: string, listener: Listener, capture?: boolean): void; removeEventListener(type: string, listener: Listener, capture?: boolean): void;
   getBoundingClientRect(): Rect; appendChild(child: Element): void; remove(): void; click?(): void;
 }
@@ -20,7 +20,7 @@ declare const document: {
   addEventListener(type: string, listener: Listener, capture?: boolean): void; removeEventListener(type: string, listener: Listener, capture?: boolean): void;
 };
 declare const window: {
-  innerWidth: number; innerHeight: number; matchMedia(query: string): Media;
+  innerWidth: number; innerHeight: number; matchMedia(query: string): Media; getComputedStyle(el: Element): Style;
   requestAnimationFrame(callback: () => void): number; cancelAnimationFrame(id: number): void;
   setTimeout(callback: () => void, ms: number): number; clearTimeout(id: number): void;
   addEventListener(type: string, listener: Listener, capture?: boolean): void; removeEventListener(type: string, listener: Listener, capture?: boolean): void;
@@ -40,9 +40,11 @@ const RIGHT_TOGGLE = '[data-testid="workspace-explorer-toggle"][aria-expanded]';
 const RIGHT_HANDLE = '[data-testid="workspace-explorer-sidebar-resize-handle"]';
 const RIGHT_HOST = '[id^="file-explorer-gesture-host-"]';
 const FLOATING = '[data-menu-surface="true"], [role="dialog"]';
+const HEADER = '[data-testid="composer-dock-header"]';
 const INPUT = 'input,textarea,select,[contenteditable="true"],[role="textbox"]';
 const DELAY = 180;
 const LEAVE_DELAY = 260;
+const padding = (el: Element, property: string) => parseFloat(window.getComputedStyle(el).getPropertyValue(property)) || 0;
 const visible = (el: Element) => { const r = el.getBoundingClientRect(); return el.isConnected && r.width > 1 && r.height > 1; };
 const inside = (el: Element | null, root: Element) => {
   for (let at = el; at; at = at.parentElement) if (at === root) return true;
@@ -64,6 +66,7 @@ export function installEdgePeek(options: {
   let restoreFrame = 0, settleFrame = 0;
   let settling = false;
   let conceal: (() => void) | null = null;
+  let header: { anchor: Element; left: number; insets: { el: Element; padding: number }[]; release: (() => void) | null } | null = null;
   let current: { side: Side; toggle: Element; root: Element | null; closing: boolean; restoring: boolean; activated: boolean } | null = null;
   const css = document.createElement('style');
   // The host/sibling selectors apply during React's first mounting commit, before
@@ -151,6 +154,38 @@ export function installEdgePeek(options: {
     try { toggle.click?.(); } finally { internalClick = false; }
   }
   function stopReveal() { conceal?.(); conceal = null; }
+  // Once the left sidebar owns the top-left window corner, the host drops the
+  // main header's traffic-light inset and menu placeholder, moving its title
+  // left. A preview overlays the canvas instead of taking width, so hold the
+  // title where it was. The anchor is the header's first visible text leaf;
+  // its ancestors' left padding identifies the inset that shrank.
+  function measureHeader() {
+    unpinHeader(); header = null;
+    const root = Array.from(document.querySelectorAll(HEADER)).find(visible);
+    const anchor = root && Array.from(root.querySelectorAll('*')).find(el => !el.querySelector('*') && el.textContent?.trim() && visible(el));
+    if (!root || !anchor) return;
+    const insets: { el: Element; padding: number }[] = [];
+    for (let at = anchor.parentElement; at && inside(at, root); at = at.parentElement) insets.push({ el: at, padding: padding(at, 'padding-left') });
+    header = { anchor, left: anchor.getBoundingClientRect().left, insets, release: null };
+  }
+  // Runs from the observer, after the host's commit and before paint.
+  function pinHeader() {
+    // Bounded to the opening commit; streaming updates later must not re-measure.
+    if (!header || header.release || !header.anchor.isConnected || document.body.getAttribute(PHASE) !== 'opening') return;
+    const shift = header.left - header.anchor.getBoundingClientRect().left;
+    if (shift < 1 || shift > 160) return;
+    const inset = header.insets.find(({ el, padding: before }) => el.isConnected && padding(el, 'padding-left') < before - 0.5);
+    if (!inset) return;
+    const { el } = inset;
+    const previous = el.style.getPropertyValue('padding-left'), priority = el.style.getPropertyPriority('padding-left');
+    el.style.setProperty('padding-left', `${padding(el, 'padding-left') + shift}px`, 'important');
+    const written = el.style.getPropertyValue('padding-left');
+    header.release = () => {
+      if (el.style.getPropertyValue('padding-left') !== written) return;
+      if (previous) el.style.setProperty('padding-left', previous, priority); else el.style.removeProperty('padding-left');
+    };
+  }
+  function unpinHeader() { header?.release?.(); if (header) header.release = null; }
   // Cascade items once the opened sidebar has its committed layout. Runs at
   // most once per preview, only while it is still sliding in.
   function revealOnce() {
@@ -158,7 +193,7 @@ export function installEdgePeek(options: {
     conceal = options.reveal(current.side);
   }
   function cleanup(handoff = false) {
-    stopReveal();
+    stopReveal(); unpinHeader(); header = null;
     window.clearTimeout(phaseTimer); phaseTimer = 0;
     window.clearTimeout(restoreTimer); restoreTimer = 0;
     window.clearTimeout(leaveTimer); leaveTimer = 0;
@@ -279,6 +314,7 @@ export function installEdgePeek(options: {
     document.body.setAttribute(MARKER, side);
     document.body.setAttribute(PHASE, 'opening');
     options.onTransition();
+    if (side === 'left') measureHeader();
     click(toggle);
     phaseTimer = window.setTimeout(() => {
       phaseTimer = 0;
@@ -365,6 +401,8 @@ export function installEdgePeek(options: {
           node.nodeType === 1 && (node.matches(controls) || node.querySelector(controls))))) refreshTriggers();
     if (!current) return;
     if (current.restoring) {
+      // The closing commit restores the host inset; release in the same frame.
+      if (!current.toggle.isConnected || current.toggle.getAttribute('aria-expanded') !== 'true') unpinHeader();
       awaitClosedLayout();
       return;
     }
@@ -374,10 +412,11 @@ export function installEdgePeek(options: {
       current.toggle = nextToggle;
     }
     if (current.toggle.getAttribute('aria-expanded') !== 'true') {
-      if (current.activated) restore();
+      if (current.activated) { unpinHeader(); restore(); }
       return;
     }
     current.activated = true;
+    pinHeader();
     if (current.side === 'right' && !current.root) {
       const root = rightDock();
       if (root) {
