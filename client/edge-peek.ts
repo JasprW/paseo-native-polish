@@ -41,6 +41,7 @@ const RIGHT_HANDLE = '[data-testid="workspace-explorer-sidebar-resize-handle"]';
 const RIGHT_HOST = '[id^="file-explorer-gesture-host-"]';
 const FLOATING = '[data-menu-surface="true"], [role="dialog"]';
 const HEADER = '[data-testid="composer-dock-header"]';
+const CONTROL = 'button, [role="button"], [data-testid]';
 const INPUT = 'input,textarea,select,[contenteditable="true"],[role="textbox"]';
 const DELAY = 180;
 const LEAVE_DELAY = 260;
@@ -66,7 +67,7 @@ export function installEdgePeek(options: {
   let restoreFrame = 0, settleFrame = 0;
   let settling = false;
   let conceal: (() => void) | null = null;
-  let header: { anchor: Element; left: number; insets: { el: Element; padding: number }[]; release: (() => void) | null } | null = null;
+  let header: { side: Side; anchor: Element; edge: number; candidates: { el: Element; padding: number }[]; release: (() => void) | null } | null = null;
   let current: { side: Side; toggle: Element; root: Element | null; closing: boolean; restoring: boolean; activated: boolean } | null = null;
   const css = document.createElement('style');
   // The host/sibling selectors apply during React's first mounting commit, before
@@ -154,35 +155,58 @@ export function installEdgePeek(options: {
     try { toggle.click?.(); } finally { internalClick = false; }
   }
   function stopReveal() { conceal?.(); conceal = null; }
-  // Once the left sidebar owns the top-left window corner, the host drops the
-  // main header's traffic-light inset and menu placeholder, moving its title
-  // left. A preview overlays the canvas instead of taking width, so hold the
-  // title where it was. The anchor is the header's first visible text leaf;
-  // its ancestors' left padding identifies the inset that shrank.
-  function measureHeader() {
+  // Opening a sidebar changes the main header around it: the left sidebar
+  // takes the top-left window corner, so the host drops the header's
+  // traffic-light inset and menu placeholder; the Explorer moves its toggle
+  // out of the header. A preview overlays the canvas instead of taking width,
+  // so hold the header items where they were. The anchor is the header item
+  // nearest the opening edge that stays; the container is the ancestor that
+  // lost the width, found by a shrinking left inset or by having held the toggle.
+  function measureHeader(side: Side, toggle: Element) {
     unpinHeader(); header = null;
     const root = Array.from(document.querySelectorAll(HEADER)).find(visible);
-    const anchor = root && Array.from(root.querySelectorAll('*')).find(el => !el.querySelector('*') && el.textContent?.trim() && visible(el));
-    if (!root || !anchor) return;
-    const insets: { el: Element; padding: number }[] = [];
-    for (let at = anchor.parentElement; at && inside(at, root); at = at.parentElement) insets.push({ el: at, padding: padding(at, 'padding-left') });
-    header = { anchor, left: anchor.getBoundingClientRect().left, insets, release: null };
+    if (!root || (side === 'right' && !inside(toggle, root))) return;
+    const property = side === 'left' ? 'padding-left' : 'padding-right';
+    const candidates: { el: Element; padding: number }[] = [];
+    let anchor: Element | null | undefined;
+    if (side === 'left') {
+      anchor = Array.from(root.querySelectorAll('*')).find(el => !el.querySelector('*') && el.textContent?.trim() && visible(el));
+      for (let at = anchor?.parentElement; at && inside(at, root); at = at.parentElement) candidates.push({ el: at, padding: padding(at, property) });
+    } else {
+      // The toggle's group (Paseo 0.14: open-in-editor, changes and the
+      // toggle) closes up when the toggle leaves. Its rightmost remaining
+      // control is the anchor. A full-width titlebar drag region and pane
+      // menus outside the group do not move, so they cannot be anchors.
+      const controls = (at: Element) => Array.from(at.querySelectorAll(CONTROL)).filter(el => !inside(el, toggle) && !inside(toggle, el) && visible(el));
+      let group = toggle.parentElement;
+      while (group && inside(group, root) && group !== root && !controls(group).length) group = group.parentElement;
+      if (!group || group === root || !inside(group, root)) return;
+      anchor = controls(group).reduce<Element | null>((best, el) => !best || el.getBoundingClientRect().right > best.getBoundingClientRect().right ? el : best, null);
+      candidates.push({ el: group, padding: padding(group, property) });
+    }
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    header = { side, anchor, edge: side === 'left' ? r.left : r.right, candidates, release: null };
   }
   // Runs from the observer, after the host's commit and before paint.
   function pinHeader() {
     // Bounded to the opening commit; streaming updates later must not re-measure.
     if (!header || header.release || !header.anchor.isConnected || document.body.getAttribute(PHASE) !== 'opening') return;
-    const shift = header.left - header.anchor.getBoundingClientRect().left;
+    const r = header.anchor.getBoundingClientRect();
+    const shift = header.side === 'left' ? header.edge - r.left : r.right - header.edge;
     if (shift < 1 || shift > 160) return;
-    const inset = header.insets.find(({ el, padding: before }) => el.isConnected && padding(el, 'padding-left') < before - 0.5);
-    if (!inset) return;
-    const { el } = inset;
-    const previous = el.style.getPropertyValue('padding-left'), priority = el.style.getPropertyPriority('padding-left');
-    el.style.setProperty('padding-left', `${padding(el, 'padding-left') + shift}px`, 'important');
-    const written = el.style.getPropertyValue('padding-left');
+    const property = header.side === 'left' ? 'padding-left' : 'padding-right';
+    const target = header.side === 'left'
+      ? header.candidates.find(({ el, padding: before }) => el.isConnected && padding(el, property) < before - 0.5)
+      : header.candidates.find(({ el }) => el.isConnected);
+    if (!target) return;
+    const { el } = target;
+    const previous = el.style.getPropertyValue(property), priority = el.style.getPropertyPriority(property);
+    el.style.setProperty(property, `${padding(el, property) + shift}px`, 'important');
+    const written = el.style.getPropertyValue(property);
     header.release = () => {
-      if (el.style.getPropertyValue('padding-left') !== written) return;
-      if (previous) el.style.setProperty('padding-left', previous, priority); else el.style.removeProperty('padding-left');
+      if (el.style.getPropertyValue(property) !== written) return;
+      if (previous) el.style.setProperty(property, previous, priority); else el.style.removeProperty(property);
     };
   }
   function unpinHeader() { header?.release?.(); if (header) header.release = null; }
@@ -314,7 +338,7 @@ export function installEdgePeek(options: {
     document.body.setAttribute(MARKER, side);
     document.body.setAttribute(PHASE, 'opening');
     options.onTransition();
-    if (side === 'left') measureHeader();
+    measureHeader(side, toggle);
     click(toggle);
     phaseTimer = window.setTimeout(() => {
       phaseTimer = 0;
