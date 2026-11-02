@@ -17,7 +17,7 @@ Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures tra
 | Agent activity | Transition status changes and fade newly appended messages once near the conversation tail. |
 | Scrolling | Damped edge rebound for agent conversations, workspace lists, Files, Changes, Markdown previews and editable/read-only file Source views. Normal scrolling and inertia stay with Paseo. |
 
-Workspace rows also move smoothly when pinned, unpinned or moved between status groups. Project creation/removal animates the group and surrounding list. These transitions use the sidebar motion setting.
+Workspace rows also move smoothly when pinned, unpinned or moved between status groups. Project creation/removal animates the group and surrounding list, and projects added or removed through sidebar filters animate the same way. These transitions use the sidebar motion setting.
 
 **Edge preview** has its own switch and is enabled by default. Move a mouse within 7 px of the left or right window edge, below the titlebar, and pause for 180 ms. **Edge peek sensitivity** sets that edge zone to 4 px (Low), 7 px (Normal) or 14 px (High). The hidden sidebar slides over the canvas and cascades its items in like a regular open. Leaving allows 260 ms to return before it closes; Escape dismisses it until the mouse leaves the edge. Open menus and focused inputs keep the preview available while you interact. Clicking the normal sidebar toggle or using its shortcut can open the regular layout dock. Already-open sidebars and compact/touch layouts retain their behavior.
 

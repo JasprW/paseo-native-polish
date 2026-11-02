@@ -1008,11 +1008,12 @@ function installWebMotion(): () => void {
       const shiftSnapshot = (shot: Snapshot): Snapshot => (shiftX || shiftY) ? {
         ...shot,
         box: {
-          ...shot.box,
           left: shot.box.left + shiftX,
           right: shot.box.right + shiftX,
           top: shot.box.top + shiftY,
           bottom: shot.box.bottom + shiftY,
+          width: shot.box.width,
+          height: shot.box.height,
         },
       } : shot;
       const exitingProjects = new Set<string>();
