@@ -52,6 +52,7 @@ const inside = (el: Element | null, root: Element) => {
 export function installEdgePeek(options: {
   enabled(): boolean; motion(): boolean; quick(): boolean;
   panels(): Map<string, Element>; onTransition(): void;
+  reveal(side: Side): (() => void) | null;
 }) {
   const fine = window.matchMedia('(hover: hover) and (pointer: fine)');
   let disposed = false;
@@ -62,6 +63,7 @@ export function installEdgePeek(options: {
   let enterTimer = 0, leaveTimer = 0, phaseTimer = 0, restoreTimer = 0, blurTimer = 0;
   let restoreFrame = 0, settleFrame = 0;
   let settling = false;
+  let conceal: (() => void) | null = null;
   let current: { side: Side; toggle: Element; root: Element | null; closing: boolean; restoring: boolean; activated: boolean } | null = null;
   const css = document.createElement('style');
   // The host/sibling selectors apply during React's first mounting commit, before
@@ -146,7 +148,15 @@ export function installEdgePeek(options: {
     internalClick = true;
     try { toggle.click?.(); } finally { internalClick = false; }
   }
+  function stopReveal() { conceal?.(); conceal = null; }
+  // Cascade items once the opened sidebar has its committed layout. Runs at
+  // most once per preview, only while it is still sliding in.
+  function revealOnce() {
+    if (!current?.root || !current.activated || current.closing || conceal || document.body.getAttribute(PHASE) !== 'opening' || !options.motion()) return;
+    conceal = options.reveal(current.side);
+  }
   function cleanup(handoff = false) {
+    stopReveal();
     window.clearTimeout(phaseTimer); phaseTimer = 0;
     window.clearTimeout(restoreTimer); restoreTimer = 0;
     window.clearTimeout(leaveTimer); leaveTimer = 0;
@@ -215,6 +225,7 @@ export function installEdgePeek(options: {
     if (current.restoring) { if (handoff) cleanup(true); return; }
     if (current.closing && !immediate) return;
     current.closing = true;
+    stopReveal();
     window.clearTimeout(phaseTimer);
     options.onTransition();
     document.body.setAttribute(PHASE, 'closing');
@@ -373,6 +384,7 @@ export function installEdgePeek(options: {
         considerLeave();
       }
     }
+    revealOnce();
     // Streaming chat/list updates do not require layout reads or a menu scan.
     if (records.some(record => record.target === document.body || record.target.closest(FLOATING) ||
         Array.from(record.removedNodes).some(node => node.nodeType === 1 && (node.matches(FLOATING) || node.querySelector(FLOATING))))) considerLeave();

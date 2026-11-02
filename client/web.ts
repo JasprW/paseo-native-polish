@@ -415,7 +415,11 @@ function installWebMotion(): () => void {
   };
   function animate(el: Element, frames: Record<string, string | number>[], cleanup?: () => void, delay = 0, milliseconds = duration(), easing = EASING) {
     active.get(el)?.();
-    if (!canAnimate() || typeof el.animate !== 'function') { cleanup?.(); return; }
+    if (!canAnimate()) { cleanup?.(); return; }
+    play(active, el, frames, cleanup, delay, milliseconds, easing);
+  }
+  function play(registry: Map<Element, () => void>, el: Element, frames: Record<string, string | number>[], cleanup: (() => void) | undefined, delay: number, milliseconds: number, easing: string) {
+    if (typeof el.animate !== 'function') { cleanup?.(); return; }
     let animation: Animation;
     try { animation = el.animate(frames, { duration: milliseconds, easing, fill: 'both', delay }); }
     catch { cleanup?.(); return; }
@@ -424,10 +428,10 @@ function installWebMotion(): () => void {
       if (finished) return;
       finished = true;
       animation.cancel();
-      if (active.get(el) === stop) active.delete(el);
+      if (registry.get(el) === stop) registry.delete(el);
       cleanup?.();
     };
-    active.set(el, stop);
+    registry.set(el, stop);
     void animation.finished.then(stop, stop);
   }
   function temporaryStyles(el: Element, values: Record<string, string>): () => void {
@@ -515,12 +519,14 @@ function installWebMotion(): () => void {
     return [...(rail ? [rail] : []), ...all(el, FILE_TREE + ', ' + CHANGE_TREE)];
   }
   // Measured before the width animation starts, while every item still has its
-  // committed position. Bounded to the visible part of the sidebar.
-  function cascadePanel(el: Element, key: string) {
+  // committed position. Bounded to the visible part of the sidebar. An edge
+  // preview passes its own registry: captures and stopAll() stay off while
+  // the preview owns the sidebar, so it cancels these items itself.
+  function cascadePanel(el: Element, key: string, registry = active) {
     const panel = rect(el);
     const top = Math.max(panel.top, 0), bottom = Math.min(panel.bottom, window.innerHeight);
     const candidates = cascadeRoots(el, key).flatMap(root => all(root, CASCADE_ITEM)).filter(item => {
-      if (item.closest('[data-native-polish-ghost]') || active.has(item)) return false;
+      if (item.closest('[data-native-polish-ghost]') || active.has(item) || registry.has(item)) return false;
       const r = rect(item);
       return r.width > 1 && r.height > 1 && r.height < 96 && r.bottom > top && r.top < bottom && r.right > panel.left && r.left < panel.right;
     });
@@ -540,7 +546,10 @@ function installWebMotion(): () => void {
     // Items slide in from the sidebar's opening edge. The independent
     // translate property composes with host and virtualizer transforms.
     const from = edge === 'left' ? '-12px 0' : '12px 0';
-    items.forEach((item, index) => animate(item, [{ opacity: 0, translate: from }, { opacity: 1, translate: '0 0' }], settled, delays[index], quick ? 220 : 300, CASCADE_EASING));
+    const frames = [{ opacity: 0, translate: from }, { opacity: 1, translate: '0 0' }];
+    items.forEach((item, index) => registry === active
+      ? animate(item, frames, settled, delays[index], quick ? 220 : 300, CASCADE_EASING)
+      : play(registry, item, frames, settled, delays[index], quick ? 220 : 300, CASCADE_EASING));
   }
   function revealPanel(el: Element, key: string) {
     const width = rect(el).width;
@@ -1848,6 +1857,12 @@ function installWebMotion(): () => void {
     motion: () => getPreferences().enabled && getPreferences().sidebars && !reduceMotion.matches,
     quick: () => getPreferences().pace === 'quick',
     panels,
+    reveal: side => {
+      const items = new Map<Element, () => void>();
+      const root = document.body.querySelector('[data-native-polish-peek-owner]');
+      if (root && !disposed && !suspended) cascadePanel(root, side === 'left' ? 'left' : 'explorer', items);
+      return items.size ? () => { for (const stop of Array.from(items.values())) stop(); } : null;
+    },
     onTransition: () => {
       clearCapture(); stopAll();
       updateMotionFlags();
