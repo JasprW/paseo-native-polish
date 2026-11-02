@@ -150,7 +150,7 @@ const HISTORY_ROW = '[data-history-row-id]';
 const EDITING = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[data-testid="file-source-editor"],.cm-editor,.monaco-editor,[data-testid="terminal-surface"],.xterm';
 // Some RN web Pressables omit a role. Keep the known interactive tree/sidebar
 // rows and pane actions eligible without capturing arbitrary content clicks.
-const ACTION = 'button,a,[role="button"],[role="link"],[role="menuitem"],[role="tab"],[role="treeitem"],[role="separator"],[data-testid="left-sidebar-resize-handle"],[tabindex="0"][aria-label],'
+const ACTION = 'button,a,[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="tab"],[role="treeitem"],[role="separator"],[data-testid="left-sidebar-resize-handle"],[data-testid^="sidebar-project-filter-"],[tabindex="0"][aria-label],'
   + PANE_ACTION + ',' + WORKSPACE_ANCHOR + ',' + FILE_ROW + ',' + CHANGE_ROW;
 const live = (selector: string) => all(document.body, selector).filter(el => !el.closest('[data-native-polish-ghost]') && visible(el));
 function firstBoxChild(el: Element): Element | null {
@@ -321,6 +321,7 @@ function disclosureFor(target: Element): Element | null {
   if (project && target.closest('[role="button"]') === project) return project.closest('[role="group"]');
   const status = target.closest(STATUS);
   if (status) return status.parentElement?.parentElement ?? null;
+  if (target.closest('[data-testid^="sidebar-project-filter-"], [data-testid^="sidebar-host-filter-"], [data-testid^="sidebar-label-filter-"], [data-testid^="sidebar-grouping-"]')) return null;
   const expanded = target.closest('[role="button"][aria-expanded]');
   if (expanded?.closest('[data-testid^="sidebar-"]')) return expanded.parentElement;
   return null;
@@ -719,7 +720,7 @@ function installWebMotion(): () => void {
   let tabRows = new Map<Element, Map<string, TabState>>();
   interface WorkspaceAnchor { shot: Snapshot; top: number; left: number; project: string | null }
   interface WorkspaceList {
-    keys: Set<string>; anchorKeys: Set<string>; sections: Map<string, string | null>; projectKeys: Set<string>;
+    bounds: Rect; keys: Set<string>; anchorKeys: Set<string>; sections: Map<string, string | null>; projectKeys: Set<string>;
     projects: Map<string, Snapshot>; anchors: Map<string, WorkspaceAnchor>; expanded: Map<string, string | null>;
   }
   let workspaceLists = new Map<Element, WorkspaceList>();
@@ -890,6 +891,20 @@ function installWebMotion(): () => void {
       // current visual position, then measure the clean destination layout.
       // Animation-generated mutations alone never restart row movement.
       if (allowed && changed) {
+        for (const [key, before] of old.projects) if (active.has(before.element)) {
+          if (before.element.isConnected) {
+            const matrix = /^matrix(?:3d)?\(([^)]+)\)$/.exec(window.getComputedStyle(before.element).getPropertyValue('transform'));
+            const values = matrix?.[1].split(',').map(Number);
+            if (values && (values.length === 6 || values.length === 16)) {
+              const dx = values[values.length === 16 ? 12 : 4];
+              const dy = values[values.length === 16 ? 13 : 5];
+              if (Number.isFinite(dx) && Number.isFinite(dy)) {
+                for (const item of old.anchors.values()) if (item.project === key) { item.top += dy; item.left += dx; }
+              }
+            }
+          }
+          active.get(before.element)?.();
+        }
         for (const item of old.anchors.values()) if (active.has(item.shot.element)) {
           if (item.shot.element.isConnected) {
             // The host has already moved the layout slot. Read just our
@@ -931,7 +946,7 @@ function installWebMotion(): () => void {
           left: box.left - bounds.left + scroll.scrollLeft, project,
         });
       }
-      nextLists.set(scroll, { keys, anchorKeys, sections, projectKeys, projects, anchors, expanded });
+      nextLists.set(scroll, { bounds, keys, anchorKeys, sections, projectKeys, projects, anchors, expanded });
       // Section expansion and sidebar width already have animation owners.
       // Rebase their rows without adding another entrance/exit underneath.
       if (!allowed || !changed) continue;
@@ -977,7 +992,9 @@ function installWebMotion(): () => void {
           if (!origin || origin.top - topItem.top <= 1) continue;
           liftedRows.set(topKey, { top: origin.top, left: origin.left, section });
           liftedSections.add(section);
-        } else if (oldList.length > 0 && nextList.length === oldList.length && nextList.includes(oldList[0])) {
+        } else if (oldList.length > 0 && nextList.length === oldList.length && nextList.includes(oldList[0])
+          && sameOrder(projectKeys, old.projectKeys)
+          && nextList.slice(1).every((k, i) => k === oldList[i])) {
           const displacedKey = [...oldList].reverse().find(k => !keys.has(k));
           const origin = displacedKey ? old.anchors.get(displacedKey) : undefined;
           if (!displacedKey || !origin || origin.top - topItem.top <= 1) continue;
@@ -986,13 +1003,27 @@ function installWebMotion(): () => void {
           overflowDisplaced.add(displacedKey);
         }
       }
+      const shiftX = bounds.left - old.bounds.left;
+      const shiftY = bounds.top - old.bounds.top;
+      const shiftSnapshot = (shot: Snapshot): Snapshot => (shiftX || shiftY) ? {
+        ...shot,
+        box: {
+          left: shot.box.left + shiftX,
+          right: shot.box.right + shiftX,
+          top: shot.box.top + shiftY,
+          bottom: shot.box.bottom + shiftY,
+          width: shot.box.width,
+          height: shot.box.height,
+        },
+      } : shot;
       const exitingProjects = new Set<string>();
       for (const [key, before] of old.projects) if (!projectKeys.has(key)) {
         // A project can disappear from the unpinned list while its workspace
         // moves to Pinned. Keep that workspace under the row's motion owner.
         const migrated = all(before.copy, WORKSPACE_ROW).some(el => keys.has(el.getAttribute('data-testid')!));
-        if (!migrated && before.box.top >= bounds.top && before.box.bottom <= bounds.bottom) {
-          ghost(before, -6); exitingProjects.add(key);
+        const shifted = shiftSnapshot(before);
+        if (!migrated && shifted.box.top >= bounds.top && shifted.box.bottom <= bounds.bottom) {
+          ghost(shifted, -6); exitingProjects.add(key);
         }
       }
       for (const [key, after] of projects) if (!old.projectKeys.has(key)) {
@@ -1005,9 +1036,9 @@ function installWebMotion(): () => void {
         if (anchorKeys.has(key) || overflowDisplaced.has(key) || (item.project && exitingProjects.has(item.project))) continue;
         // Only actual removals, including headers, exit. Offscreen movement
         // does not count as removal from the mounted sidebar list.
-        if (!removed.includes(key) && !item.shot.element.matches(PROJECT + ', ' + STATUS + ', [data-testid="sidebar-pinned-section-header"]')) continue;
+        if (!removed.includes(key) && !item.shot.element.matches(PROJECT + ', ' + STATUS + ', [data-testid="sidebar-pinned-section-header"], [data-testid*="sidebar-"][data-testid*="show-more"]')) continue;
         if (item.shot.element.isConnected && scroll === item.shot.element.closest(WORKSPACE_SCROLL)) continue;
-        const before = item.shot;
+        const before = item.shot ? shiftSnapshot(item.shot) : null;
         // A partially clipped row should never escape the sidebar viewport.
         if (before && before.box.top >= bounds.top && before.box.bottom <= bounds.bottom) ghost(before, -6);
       }
@@ -1755,7 +1786,7 @@ function installWebMotion(): () => void {
     const target = elementOf(event.target);
     if (target?.closest('[data-native-polish-ghost]')) return;
     if (target && (disclosureFor(target)?.closest(WORKSPACE_SCROLL) || target.closest(
-      '[data-testid*="sidebar-"][data-testid*="show-more"], [data-testid^="sidebar-project-filter-"], [data-testid^="sidebar-host-filter-"], [data-testid^="sidebar-label-filter-"], [data-testid^="sidebar-grouping-"]'
+      '[data-testid*="sidebar-"][data-testid*="show-more"], [data-testid^="sidebar-host-filter-"], [data-testid^="sidebar-label-filter-"], [data-testid^="sidebar-grouping-"]'
     ))) workspaceQuietUntil = Date.now() + 900;
     // Finish interrupted motion before measuring the next layout. No delayed
     // input handlers: the host receives the original click/key immediately.
