@@ -50,7 +50,7 @@ const inside = (el: Element | null, root: Element) => {
 };
 
 export function installEdgePeek(options: {
-  enabled(): boolean; motion(): boolean; quick(): boolean;
+  enabled(): boolean; motion(): boolean; quick(): boolean; width(): number;
   panels(): Map<string, Element>; onTransition(): void;
   reveal(side: Side): (() => void) | null;
 }) {
@@ -74,7 +74,7 @@ export function installEdgePeek(options: {
   const owners = `body[${MARKER}] [${OWNER}], ${right}`;
   css.textContent = `
     [${TRIGGER}] {
-      position: fixed; top: 44px; bottom: 8px; width: 7px;
+      position: fixed; top: 44px; bottom: 8px; width: var(--native-polish-peek-edge, 7px);
       z-index: 79; background: transparent; pointer-events: none;
     }
     [${TRIGGER}="left"] { left: 0; }
@@ -132,6 +132,7 @@ export function installEdgePeek(options: {
       document.body.getAttribute(MARKER) === null &&
       Boolean(document.body.querySelector('[data-testid="left-sidebar-resize-handle"]')) && !floating();
     for (const { side, element } of triggers) {
+      element.style.setProperty('--native-polish-peek-edge', `${options.width()}px`);
       const active = ready && toggleFor(side)?.getAttribute('aria-expanded') === 'false';
       if (active) element.setAttribute('data-native-polish-peek-ready', '');
       else element.removeAttribute('data-native-polish-peek-ready');
@@ -139,8 +140,9 @@ export function installEdgePeek(options: {
   }
   const edge = () => {
     if (!pointer || pointer.buttons || pointer.y < 44 || pointer.y > window.innerHeight - 8) return null;
-    if (pointer.x >= 0 && pointer.x <= 7) return 'left';
-    if (pointer.x <= window.innerWidth && pointer.x >= window.innerWidth - 7) return 'right';
+    const width = options.width();
+    if (pointer.x >= 0 && pointer.x <= width) return 'left';
+    if (pointer.x <= window.innerWidth && pointer.x >= window.innerWidth - width) return 'right';
     return null;
   };
   function clearEnter() { window.clearTimeout(enterTimer); enterTimer = 0; candidate = null; }

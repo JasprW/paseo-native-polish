@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import { defaults, getPreferences, setPreferences, subscribePreferences } from "./preferences";
+import { defaults, edgePeekWidths, getPreferences, setPreferences, subscribePreferences } from "./preferences";
 import { installElasticScroll } from "./elastic-scroll";
 import { installEdgePeek } from "./edge-peek";
 import { leaseMotion } from "./motion-runtime";
@@ -380,6 +380,7 @@ function installWebMotion(): () => void {
       const next = { ...defaults };
       for (const key of ['enabled', 'sidebars', 'trees', 'timeline', 'panes', 'tabs', 'overlays', 'controls', 'states', 'messages', 'elasticScroll', 'edgePeek'] as const) if (typeof saved[key] === 'boolean') next[key] = saved[key];
       if (saved.pace === 'quick') next.pace = 'quick';
+      if (saved.edgePeekSensitivity === 'low' || saved.edgePeekSensitivity === 'high') next.edgePeekSensitivity = saved.edgePeekSensitivity;
       setPreferences(next);
     }
   } catch { /* A blocked storage area should not disable motion. */ }
@@ -1856,6 +1857,8 @@ function installWebMotion(): () => void {
     enabled: () => !disposed && getPreferences().enabled && getPreferences().edgePeek,
     motion: () => getPreferences().enabled && getPreferences().sidebars && !reduceMotion.matches,
     quick: () => getPreferences().pace === 'quick',
+    // Preferences created by an older plugin copy on another host lack this key.
+    width: () => edgePeekWidths[getPreferences().edgePeekSensitivity] ?? edgePeekWidths.normal,
     panels,
     reveal: side => {
       const items = new Map<Element, () => void>();
