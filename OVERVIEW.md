@@ -1,4 +1,4 @@
-Native Polish adds motion to Paseo's desktop and web client: sidebar expansion and collapse, tab opening and closing, pane splitting, closing and maximize/restore, menus and dialogs, button feedback, file tree arrows, tool call and thinking details, agent status changes and new messages. It uses the existing Paseo views, including specialized tool output and grouped tools. Hover tooltips keep Paseo's own motion and hover lifecycle.
+Native Polish adds motion to Paseo's desktop and web client: sidebar expansion and collapse, tab opening and closing, pane splitting, closing and maximize/restore, menus and dialogs, button feedback, file tree arrows, tool call and thinking details, chat prompt outline rail entrance and exit, agent status changes and new messages. It uses the existing Paseo views, including specialized tool output and grouped tools. Hover tooltips keep Paseo's own motion and hover lifecycle.
 
 Requires Paseo 0.11.2 or later. The desktop and web adapter depends on Paseo's internal view structure and stays out of the way when it does not match. iOS and Android keep their existing motion.
 
