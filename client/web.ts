@@ -1577,7 +1577,9 @@ function installWebMotion(): () => void {
     const existing = outlineRails.get(rail);
     const copy = rail.cloneNode(true);
     for (const preview of all(copy, OUTLINE_PREVIEW)) preview.remove();
-    const css = document.querySelector(UNISTYLES_SHEET)?.textContent ?? existing?.css ?? '';
+    const css = !rail.isConnected && existing?.css
+      ? existing.css
+      : document.querySelector(UNISTYLES_SHEET)?.textContent ?? existing?.css ?? '';
     outlineRails.set(rail, {
       copy,
       css,
