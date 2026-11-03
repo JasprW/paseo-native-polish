@@ -3,6 +3,7 @@ import { defaults, edgePeekWidths, getPreferences, setPreferences, subscribePref
 import { installElasticScroll } from "./elastic-scroll";
 import { installEdgePeek } from "./edge-peek";
 import { leaseMotion } from "./motion-runtime";
+import { OUTLINE_PREVIEW_TEST_ID, OUTLINE_RAIL_TEST_ID, outlineRailDuration, outlineRailKeyframes, outlineRailProgress } from "./outline-rail-motion";
 import { cascadeDelays } from "./sidebar-cascade";
 import { isChangeTreeRowTestId, treeMotionOwners, treeRowTranslation, treeRowsAfterAnchor } from "./tree-motion";
 
@@ -147,6 +148,8 @@ const TAB_ROW = '[data-testid="workspace-tabs-scroll"]';
 const FLOATING = '[data-menu-surface="true"], [role="dialog"]';
 const CHAT = '[data-testid="agent-chat-scroll"]';
 const HISTORY_ROW = '[data-history-row-id]';
+const OUTLINE_RAIL = `[data-testid="${OUTLINE_RAIL_TEST_ID}"]`;
+const OUTLINE_PREVIEW = `[data-testid="${OUTLINE_PREVIEW_TEST_ID}"]`;
 const EDITING = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[data-testid="file-source-editor"],.cm-editor,.monaco-editor,[data-testid="terminal-surface"],.xterm';
 // Some RN web Pressables omit a role. Keep the known interactive tree/sidebar
 // rows and pane actions eligible without capturing arbitrary content clicks.
@@ -1517,6 +1520,46 @@ function installWebMotion(): () => void {
       chats.set(chat, { seen, pending: candidates, running });
     }
   }
+  // ChatOutlineRail mounts `[data-testid="chat-outline-rail"]` inside its
+  // `panelMeasure` overlay (`position: absolute; inset: 0`) when the chat has
+  // at least two prompts and the container width is >= 918px. When the chat
+  // narrows below 918px, `panelMeasure` stays mounted and visible to track
+  // `onLayout` while the rail child unmounts. Slide the rail in from the left
+  // on mount and slide an inert Unistyles-restored copy out to the left when
+  // its `panelMeasure` parent remains visible on unmount. Keep its animation
+  // registry separate from `stopAll()` so dragging a sidebar resize handle or
+  // scrolling the chat never aborts an in-flight rail transition.
+  interface OutlineRailState { copy: Element; css: string; parent: Element | null; startedAt: number; durationMs: number; span: number }
+  interface OutlineRailExit { copy: Element; stop: () => void; startedAt: number; durationMs: number; span: number }
+  const outlineRails = new Map<Element, OutlineRailState>();
+  const outlineExits = new Map<Element, OutlineRailExit>();
+  const outlineActive = new Map<Element, () => void>();
+  function stopOutlineRails() {
+    for (const stop of Array.from(outlineActive.values())) stop();
+    outlineActive.clear();
+    outlineExits.clear();
+  }
+  function snapshotOutlineRail(rail: Element, startedAt?: number, durationMs?: number, span?: number) {
+    const existing = outlineRails.get(rail);
+    const copy = rail.cloneNode(true);
+    for (const preview of all(copy, OUTLINE_PREVIEW)) preview.remove();
+    const css = document.querySelector(UNISTYLES_SHEET)?.textContent ?? existing?.css ?? '';
+    outlineRails.set(rail, {
+      copy,
+      css,
+      parent: rail.parentElement ?? existing?.parent ?? null,
+      startedAt: startedAt ?? existing?.startedAt ?? 0,
+      durationMs: durationMs ?? existing?.durationMs ?? 0,
+      span: span ?? existing?.span ?? 1,
+    });
+  }
+  function seedOutlineRails() {
+    for (const rail of Array.from(outlineRails.keys())) if (!rail.isConnected) outlineRails.delete(rail);
+    for (const rail of all(document.body, OUTLINE_RAIL)) {
+      if (rail.closest('[data-native-polish-ghost]')) continue;
+      if (!outlineRails.has(rail)) snapshotOutlineRail(rail, 0, 0, 1);
+    }
+  }
   function refreshAmbient(allow = canAnimate(), selected: ReadonlySet<Region> = new Set(regions)) {
     if (disposed || suspended) return;
     if (selected.has('elastic')) elastic.refresh();
@@ -1529,7 +1572,7 @@ function installWebMotion(): () => void {
     if (selected.has('agents')) updateAgentStates(allow);
     if (selected.has('files')) updateFileStates(allow);
     if (selected.has('tools')) updateToolStates(allow);
-    if (selected.has('messages')) updateMessages(allow);
+    if (selected.has('messages')) { updateMessages(allow); seedOutlineRails(); }
   }
   function scheduleAmbient(selected: Region[] = regions) {
     if (disposed || suspended) return;
@@ -1704,6 +1747,93 @@ function installWebMotion(): () => void {
     if (removed.length) hideShortcutBadges(removed, target);
     return added.length + removed.length > 0 && added.length + removed.length === record.addedNodes.length + record.removedNodes.length;
   }
+  function collectOutlineRails(nodes: ArrayLike<Element>): Element[] {
+    const found: Element[] = [];
+    for (const node of Array.from(nodes)) {
+      if (node.nodeType !== 1 || node.getAttribute('data-native-polish-ghost') !== null) continue;
+      if (node.matches(OUTLINE_RAIL)) found.push(node);
+      else for (const rail of all(node, OUTLINE_RAIL)) if (!rail.closest('[data-native-polish-ghost]')) found.push(rail);
+    }
+    return found;
+  }
+  function showOutlineRails(nodes: Element[]) {
+    for (const rail of Array.from(outlineRails.keys())) if (!rail.isConnected) outlineRails.delete(rail);
+    for (const rail of nodes) {
+      if (!rail.isConnected || outlineRails.has(rail)) {
+        if (rail.isConnected) snapshotOutlineRail(rail);
+        continue;
+      }
+      const parent = rail.parentElement;
+      const exiting = parent ? outlineExits.get(parent) : undefined;
+      const span = exiting ? outlineRailProgress(Date.now() - exiting.startedAt, exiting.durationMs, exiting.span) : 1;
+      exiting?.stop();
+      const allow = canAnimate() && getPreferences().timeline && Boolean(parent && visible(parent) && !hasAncestor(parent, panelExits) && !hasAncestor(parent, panelEntries));
+      if (!allow || !parent || span <= 0) {
+        snapshotOutlineRail(rail, 0, 0, 1);
+        continue;
+      }
+      const durationMs = outlineRailDuration(duration(), span);
+      snapshotOutlineRail(rail, Date.now(), durationMs, span);
+      const releaseClip = temporaryStyles(parent, { overflow: 'hidden' });
+      outlineActive.get(rail)?.();
+      play(outlineActive, rail, outlineRailKeyframes('enter', span), releaseClip, 0, durationMs, EASING);
+    }
+  }
+  function hideOutlineRails(nodes: Element[], fallbackParent: Element) {
+    for (const rail of nodes) {
+      const state = outlineRails.get(rail);
+      outlineRails.delete(rail);
+      if (!state) continue;
+      const wasEntering = outlineActive.has(rail);
+      const span = wasEntering ? outlineRailProgress(Date.now() - state.startedAt, state.durationMs, state.span) : 1;
+      outlineActive.get(rail)?.();
+      const parent = state.parent ?? fallbackParent;
+      const allow = canAnimate() && getPreferences().timeline && Boolean(parent?.isConnected && visible(parent) && !hasAncestor(parent, panelExits));
+      if (!allow || !parent || span <= 0) continue;
+      outlineExits.get(parent)?.stop();
+      const sheet = restoreUnistyles(state.copy, state.css);
+      const copy = inertCopy(state.copy.cloneNode(true));
+      copy.style.setProperty('pointer-events', 'none', 'important');
+      const releaseClip = temporaryStyles(parent, { overflow: 'hidden' });
+      parent.appendChild(copy);
+      const durationMs = outlineRailDuration(duration(), span);
+      const cleanup = () => {
+        copy.remove();
+        sheet?.remove();
+        releaseClip();
+        if (outlineExits.get(parent)?.copy === copy) outlineExits.delete(parent);
+      };
+      play(outlineActive, copy, outlineRailKeyframes('exit', span), cleanup, 0, durationMs, EASING);
+      const stop = outlineActive.get(copy);
+      if (stop) outlineExits.set(parent, { copy, stop, startedAt: Date.now(), durationMs, span });
+    }
+  }
+  function refreshOutlineRailFromMutation(target: Element, record?: Mutation): boolean {
+    const rail = target.closest(OUTLINE_RAIL);
+    if (!rail || !rail.isConnected || rail.closest('[data-native-polish-ghost]')) return false;
+    if (target.closest(OUTLINE_PREVIEW)) return true;
+    if (record && record.type === 'childList') {
+      const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
+      if (nodes.length && nodes.every(node => node.nodeType === 1 && node.matches(OUTLINE_PREVIEW))) return true;
+    }
+    snapshotOutlineRail(rail);
+    return true;
+  }
+  function updateOutlineRails(record: Mutation, target: Element): boolean {
+    const added = collectOutlineRails(record.addedNodes);
+    const removedSet = new Set<Element>(collectOutlineRails(record.removedNodes));
+    for (const rail of outlineRails.keys()) if (!rail.isConnected) removedSet.add(rail);
+    const removed = Array.from(removedSet);
+    if (added.length) showOutlineRails(added);
+    if (removed.length) hideOutlineRails(removed, target);
+    if (added.length + removed.length > 0) {
+      const totalDirect = record.addedNodes.length + record.removedNodes.length;
+      const directRails = Array.from(record.addedNodes).filter(n => n.nodeType === 1 && n.matches(OUTLINE_RAIL)).length
+        + Array.from(record.removedNodes).filter(n => n.nodeType === 1 && n.matches(OUTLINE_RAIL)).length;
+      return totalDirect > 0 && directRails === totalDirect;
+    }
+    return refreshOutlineRailFromMutation(target, record);
+  }
   const observer = new MutationObserver(records => {
     if (disposed || suspended) return;
     for (const record of records) {
@@ -1721,6 +1851,9 @@ function installWebMotion(): () => void {
         const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
         if (nodes.length && nodes.every(node => node.nodeType === 1 && (node.getAttribute('data-native-polish-ghost') !== null || node.getAttribute('data-native-polish-peek-trigger') !== null))) continue;
         if (updateShortcutBadges(record, target)) continue;
+        if (updateOutlineRails(record, target)) continue;
+      } else if (refreshOutlineRailFromMutation(target, record)) {
+        continue;
       }
       // Offset/clip/translate writes belong solely to the elastic adapter.
       // Host spinner leaf styles likewise do not invalidate whole layouts.
@@ -1827,11 +1960,11 @@ function installWebMotion(): () => void {
     quietUntil = Date.now() + 250;
     pending = null; treeTarget = null; stopAll();
   };
-  const onReduce = () => { edgePeek?.refresh(); updateMotionFlags(); if (reduceMotion.matches) { pending = null; stopAll(); removeTitleCovers(); refreshAmbient(false); } };
+  const onReduce = () => { edgePeek?.refresh(); updateMotionFlags(); if (reduceMotion.matches) { pending = null; stopAll(); stopOutlineRails(); removeTitleCovers(); refreshAmbient(false); } };
   const unsubscribe = subscribePreferences(() => {
     try { window.localStorage.setItem(PREF_KEY, JSON.stringify(getPreferences())); } catch { /* optional persistence */ }
     edgePeek?.refresh();
-    pending = null; stopAll(); removeTitleCovers(); updateMotionFlags(); refreshAmbient(false);
+    pending = null; stopAll(); stopOutlineRails(); removeTitleCovers(); updateMotionFlags(); refreshAmbient(false);
   });
   // RN Pressable / gesture handlers may commit on pointerup, before the DOM
   // click arrives. Measuring in click capture sees the final layout already.
@@ -1854,7 +1987,7 @@ function installWebMotion(): () => void {
     suspended = true; composing = false; clearCapture();
     window.clearTimeout(scrollDeadline); scrollDeadline = 0;
     window.cancelAnimationFrame(passiveFrame); passiveFrame = 0; dirty.clear();
-    stopAll(); shortcutBadges.clear(); elastic.reset(); elastic.refresh(); updateMotionFlags();
+    stopAll(); stopOutlineRails(); shortcutBadges.clear(); outlineRails.clear(); elastic.reset(); elastic.refresh(); updateMotionFlags();
     window.cancelAnimationFrame(diffFrame); diffFrame = 0; diffTail = false;
     window.cancelAnimationFrame(titleFrame); titleFrame = 0; titleLastTime = 0;
     // Exit copies are unnecessary while no motion is presented. Release
@@ -1898,7 +2031,7 @@ function installWebMotion(): () => void {
       return items.size ? () => { for (const stop of Array.from(items.values())) stop(); } : null;
     },
     onTransition: () => {
-      clearCapture(); stopAll();
+      clearCapture(); stopAll(); stopOutlineRails();
       updateMotionFlags();
       // Rebase pane/list geometry; the preview owns only its horizontal slide.
       refreshAmbient(false);
@@ -1952,7 +2085,7 @@ function installWebMotion(): () => void {
     window.cancelAnimationFrame(titleFrame); titleFrame = 0;
     window.clearTimeout(scrollDeadline); dirty.clear();
     workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); fileIcons.clear(); toolIcons.clear(); toolStates.clear(); agentStates.clear();
-    workspaceMeta.clear(); workspaceTitleBaseline.clear(); removeTitleCovers(); titleReveals.clear(); titleRevealKeys.clear(); shortcutBadges.clear();
-    pending = null; treeTarget = null; stopAll();
+    workspaceMeta.clear(); workspaceTitleBaseline.clear(); removeTitleCovers(); titleReveals.clear(); titleRevealKeys.clear(); shortcutBadges.clear(); outlineRails.clear();
+    pending = null; treeTarget = null; stopAll(); stopOutlineRails();
   };
 }
