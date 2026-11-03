@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import {
+  easeOutlineRail,
   OUTLINE_PREVIEW_TEST_ID,
   OUTLINE_RAIL_OFFSET_PX,
   OUTLINE_RAIL_TEST_ID,
@@ -23,23 +24,38 @@ assert.deepEqual(outlineRailKeyframes('exit'), [
   { translate: '-24px 0', opacity: 0 },
 ]);
 
-// If an exit animation is interrupted 40% of the way through (72ms of 180ms),
-// the rail is at -9.6px with 0.6 opacity. Re-entering from that progress
-// starts from the exact in-flight position rather than snapping to -24px.
-const enterSpanAfterInterruptedExit = outlineRailProgress(72, 180, 1);
-assert.equal(enterSpanAfterInterruptedExit, 0.4);
-assert.deepEqual(outlineRailKeyframes('enter', enterSpanAfterInterruptedExit), [
+// Ease curve matches EASING = cubic-bezier(0.22, 1, 0.36, 1)
+assert.equal(easeOutlineRail(0), 0);
+assert.equal(easeOutlineRail(1), 1);
+assert.equal(Math.round(easeOutlineRail(0.4) * 1000) / 1000, 0.917);
+
+// When an active Animation's inFlightProgress is provided (e.g. 0.4),
+// the rail reverses from that exact in-flight progress (span = 0.4).
+const enterSpanFromComputedProgress = outlineRailProgress(72, 180, 1, 0.4);
+assert.equal(enterSpanFromComputedProgress, 0.4);
+assert.deepEqual(outlineRailKeyframes('enter', enterSpanFromComputedProgress), [
   { translate: '-9.6px 0', opacity: 0.6 },
   { translate: '0 0', opacity: 1 },
 ]);
 
+// If an exit animation is interrupted at 72ms of 180ms without an animation
+// object, progress is derived from the eased curve (easeOutlineRail(0.4) ≈ 0.917),
+// matching the EASING curve rather than a linear elapsed ratio.
+const enterSpanEased = outlineRailProgress(72, 180, 1);
+assert.equal(enterSpanEased, 0.917);
+assert.deepEqual(outlineRailKeyframes('enter', enterSpanEased), [
+  { translate: '-22.008px 0', opacity: 0.083 },
+  { translate: '0 0', opacity: 1 },
+]);
+
 // If that resumed entrance (starting at span 0.4, i.e. -9.6px / opacity 0.6)
-// is interrupted halfway through (50%), the rail is now at -4.8px with 0.8 opacity.
-// Reversing back to exit starts from that exact position (-4.8px / opacity 0.8).
+// is interrupted halfway through (inFlightProgress = 0.5), the rail is at -4.8px
+// with 0.8 opacity. Reversing back to exit starts from that exact position.
 const exitSpanAfterInterruptedEnter = outlineRailProgress(
   50,
   100,
-  enterSpanAfterInterruptedExit,
+  enterSpanFromComputedProgress,
+  0.5,
 );
 assert.equal(exitSpanAfterInterruptedEnter, 0.8);
 assert.deepEqual(outlineRailKeyframes('exit', exitSpanAfterInterruptedEnter), [

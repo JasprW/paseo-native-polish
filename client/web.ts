@@ -22,7 +22,7 @@ interface Animation {
   cancel(): void; finished: Promise<unknown>;
   /** CSS animations only. */
   animationName?: string;
-  effect?: { getKeyframes?(): Record<string, unknown>[] } | null;
+  effect?: { getKeyframes?(): Record<string, unknown>[]; getComputedTiming?(): { progress?: number | null } } | null;
 }
 interface Element {
   nodeType: number; parentElement: Element | null; nextElementSibling: Element | null; children: ArrayLike<Element>;
@@ -423,11 +423,11 @@ function installWebMotion(): () => void {
     if (!canAnimate()) { cleanup?.(); return; }
     play(active, el, frames, cleanup, delay, milliseconds, easing);
   }
-  function play(registry: Map<Element, () => void>, el: Element, frames: Record<string, string | number>[], cleanup: (() => void) | undefined, delay: number, milliseconds: number, easing: string) {
-    if (typeof el.animate !== 'function') { cleanup?.(); return; }
+  function play(registry: Map<Element, () => void>, el: Element, frames: Record<string, string | number>[], cleanup: (() => void) | undefined, delay: number, milliseconds: number, easing: string): Animation | undefined {
+    if (typeof el.animate !== 'function') { cleanup?.(); return undefined; }
     let animation: Animation;
     try { animation = el.animate(frames, { duration: milliseconds, easing, fill: 'both', delay }); }
-    catch { cleanup?.(); return; }
+    catch { cleanup?.(); return undefined; }
     let finished = false;
     const stop = () => {
       if (finished) return;
@@ -438,6 +438,7 @@ function installWebMotion(): () => void {
     };
     registry.set(el, stop);
     void animation.finished.then(stop, stop);
+    return animation;
   }
   function temporaryStyles(el: Element, values: Record<string, string>): () => void {
     const previous = Object.keys(values).map(key => [key, el.style.getPropertyValue(key), el.style.getPropertyPriority(key)]);
@@ -1529,17 +1530,50 @@ function installWebMotion(): () => void {
   // its `panelMeasure` parent remains visible on unmount. Keep its animation
   // registry separate from `stopAll()` so dragging a sidebar resize handle or
   // scrolling the chat never aborts an in-flight rail transition.
-  interface OutlineRailState { copy: Element; css: string; parent: Element | null; startedAt: number; durationMs: number; span: number }
-  interface OutlineRailExit { copy: Element; stop: () => void; startedAt: number; durationMs: number; span: number }
+  interface OutlineRailState { copy: Element; css: string; parent: Element | null; startedAt: number; durationMs: number; span: number; animation?: Animation }
+  interface OutlineRailExit { copy: Element; stop: () => void; startedAt: number; durationMs: number; span: number; animation?: Animation }
   const outlineRails = new Map<Element, OutlineRailState>();
   const outlineExits = new Map<Element, OutlineRailExit>();
   const outlineActive = new Map<Element, () => void>();
+  const dirtyOutlineRails = new Set<Element>();
+  let outlineFrame = 0;
+  function flushDirtyOutlineRail(rail: Element) {
+    if (dirtyOutlineRails.delete(rail)) {
+      if (!rail.closest('[data-native-polish-ghost]')) {
+        snapshotOutlineRail(rail);
+      }
+      if (dirtyOutlineRails.size === 0 && outlineFrame) {
+        window.cancelAnimationFrame(outlineFrame);
+        outlineFrame = 0;
+      }
+    }
+  }
+  function markOutlineRailDirty(rail: Element) {
+    dirtyOutlineRails.add(rail);
+    if (!outlineFrame) {
+      outlineFrame = window.requestAnimationFrame(() => {
+        outlineFrame = 0;
+        for (const r of dirtyOutlineRails) {
+          if (r.isConnected && !r.closest('[data-native-polish-ghost]')) {
+            snapshotOutlineRail(r);
+          }
+        }
+        dirtyOutlineRails.clear();
+      });
+    }
+  }
   function stopOutlineRails() {
+    if (outlineFrame) {
+      window.cancelAnimationFrame(outlineFrame);
+      outlineFrame = 0;
+    }
+    dirtyOutlineRails.clear();
     for (const stop of Array.from(outlineActive.values())) stop();
     outlineActive.clear();
     outlineExits.clear();
   }
-  function snapshotOutlineRail(rail: Element, startedAt?: number, durationMs?: number, span?: number) {
+  function snapshotOutlineRail(rail: Element, startedAt?: number, durationMs?: number, span?: number, animation?: Animation) {
+    dirtyOutlineRails.delete(rail);
     const existing = outlineRails.get(rail);
     const copy = rail.cloneNode(true);
     for (const preview of all(copy, OUTLINE_PREVIEW)) preview.remove();
@@ -1551,6 +1585,7 @@ function installWebMotion(): () => void {
       startedAt: startedAt ?? existing?.startedAt ?? 0,
       durationMs: durationMs ?? existing?.durationMs ?? 0,
       span: span ?? existing?.span ?? 1,
+      animation: animation ?? existing?.animation,
     });
   }
   function seedOutlineRails() {
@@ -1760,12 +1795,13 @@ function installWebMotion(): () => void {
     for (const rail of Array.from(outlineRails.keys())) if (!rail.isConnected) outlineRails.delete(rail);
     for (const rail of nodes) {
       if (!rail.isConnected || outlineRails.has(rail)) {
-        if (rail.isConnected) snapshotOutlineRail(rail);
+        if (rail.isConnected) markOutlineRailDirty(rail);
         continue;
       }
       const parent = rail.parentElement;
       const exiting = parent ? outlineExits.get(parent) : undefined;
-      const span = exiting ? outlineRailProgress(Date.now() - exiting.startedAt, exiting.durationMs, exiting.span) : 1;
+      const inFlightProgress = exiting?.animation?.effect?.getComputedTiming?.()?.progress ?? null;
+      const span = exiting ? outlineRailProgress(Date.now() - exiting.startedAt, exiting.durationMs, exiting.span, inFlightProgress) : 1;
       exiting?.stop();
       const allow = canAnimate() && getPreferences().timeline && Boolean(parent && visible(parent) && !hasAncestor(parent, panelExits) && !hasAncestor(parent, panelEntries));
       if (!allow || !parent || span <= 0) {
@@ -1776,16 +1812,20 @@ function installWebMotion(): () => void {
       snapshotOutlineRail(rail, Date.now(), durationMs, span);
       const releaseClip = temporaryStyles(parent, { overflow: 'hidden' });
       outlineActive.get(rail)?.();
-      play(outlineActive, rail, outlineRailKeyframes('enter', span), releaseClip, 0, durationMs, EASING);
+      const animation = play(outlineActive, rail, outlineRailKeyframes('enter', span), releaseClip, 0, durationMs, EASING);
+      const state = outlineRails.get(rail);
+      if (state) state.animation = animation;
     }
   }
   function hideOutlineRails(nodes: Element[], fallbackParent: Element) {
     for (const rail of nodes) {
+      flushDirtyOutlineRail(rail);
       const state = outlineRails.get(rail);
       outlineRails.delete(rail);
       if (!state) continue;
       const wasEntering = outlineActive.has(rail);
-      const span = wasEntering ? outlineRailProgress(Date.now() - state.startedAt, state.durationMs, state.span) : 1;
+      const inFlightProgress = wasEntering ? state.animation?.effect?.getComputedTiming?.()?.progress ?? null : null;
+      const span = wasEntering ? outlineRailProgress(Date.now() - state.startedAt, state.durationMs, state.span, inFlightProgress) : 1;
       outlineActive.get(rail)?.();
       const parent = state.parent ?? fallbackParent;
       const allow = canAnimate() && getPreferences().timeline && Boolean(parent?.isConnected && visible(parent) && !hasAncestor(parent, panelExits));
@@ -1803,9 +1843,9 @@ function installWebMotion(): () => void {
         releaseClip();
         if (outlineExits.get(parent)?.copy === copy) outlineExits.delete(parent);
       };
-      play(outlineActive, copy, outlineRailKeyframes('exit', span), cleanup, 0, durationMs, EASING);
+      const animation = play(outlineActive, copy, outlineRailKeyframes('exit', span), cleanup, 0, durationMs, EASING);
       const stop = outlineActive.get(copy);
-      if (stop) outlineExits.set(parent, { copy, stop, startedAt: Date.now(), durationMs, span });
+      if (stop) outlineExits.set(parent, { copy, stop, startedAt: Date.now(), durationMs, span, animation });
     }
   }
   function refreshOutlineRailFromMutation(target: Element, record?: Mutation): boolean {
@@ -1816,7 +1856,7 @@ function installWebMotion(): () => void {
       const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
       if (nodes.length && nodes.every(node => node.nodeType === 1 && node.matches(OUTLINE_PREVIEW))) return true;
     }
-    snapshotOutlineRail(rail);
+    markOutlineRailDirty(rail);
     return true;
   }
   function updateOutlineRails(record: Mutation, target: Element): boolean {
