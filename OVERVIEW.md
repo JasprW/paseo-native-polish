@@ -1,6 +1,6 @@
 Native Polish adds motion to Paseo's desktop and web client: sidebar expansion and collapse, tab opening and closing, pane splitting, closing and maximize/restore, menus and dialogs, button feedback, file tree arrows, tool call and thinking details, chat prompt outline rail entrance and exit, agent status changes and new messages. It uses the existing Paseo views, including specialized tool output and grouped tools. Hover tooltips keep Paseo's own motion and hover lifecycle.
 
-Requires Paseo 0.11.2 or later. The desktop and web adapter depends on Paseo's internal view structure and stays out of the way when it does not match. iOS and Android keep their existing motion.
+Requires Paseo 0.11.2 or later, including the retained left sidebar dock in 0.16.0-beta.2. Both sidebars animate when toggled by button or keyboard shortcut. The desktop and web adapter depends on Paseo's internal view structure and stays out of the way when it does not match. iOS and Android keep their existing motion.
 
 On desktop, hovering at a hidden sidebar's window edge temporarily opens the real sidebar over the canvas without resizing panes, cascading its items in as a regular open does. Move away to close it, or press Escape. This has its own setting and works in local and remote workspaces, including alongside HTML previews. While enabled, the corresponding outermost 7 px below the titlebar (4 or 14 px with the edge peek sensitivity setting) are reserved for hover activation. Normal sidebar buttons still open the regular layout dock.
 

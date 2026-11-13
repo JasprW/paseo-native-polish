@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md)
 
-Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures transition smoothly while keeping Paseo's views and controls.
+Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures transition smoothly while keeping Paseo's views and controls. Both sidebars animate when toggled by button or keyboard shortcut.
 
 ## Features
 
@@ -37,7 +37,7 @@ Streaming updates are coalesced by surface; wheel bursts rebase list snapshots a
 
 ## Install
 
-Requires **Paseo 0.11.2** or later, with plugins enabled on the target daemon. The DOM adapter was developed against 0.11.2.
+Requires **Paseo 0.11.2** or later, with plugins enabled on the target daemon. The DOM adapter was developed against 0.11.2 and supports the retained left sidebar dock in 0.16.0-beta.2.
 
 ```sh
 paseo plugin add git:JasprW/paseo-native-polish
