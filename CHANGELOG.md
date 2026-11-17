@@ -12,8 +12,17 @@
 ## 0.4.20 · 2026-11-17
 
 - Prevent a full-width flash when opening a sidebar with the menu button. Sidebar transitions now start before the host commit paints, including commits that arrive late in an animation frame or after the short layout poll ends.
+## 0.4.19 · 2026-11-13
+
+- Restore keyboard-triggered opening and closing for both sidebars on Paseo 0.16.0-beta.2. Sidebar commits now use the layout captured on Cmd/Ctrl press, or the last settled layout when a native menu accelerator bypasses DOM keyboard events. Releasing the modifier before the layout commit and repeated toggles under one modifier hold retain their transitions.
+
+## 0.4.18 · 2026-11-13
+
+- Restore smooth left sidebar expansion and collapse on Paseo 0.16.0-beta.2. Animate the outer retained dock so the sidebar and adjacent panes resize together, while preserving the pre-close row layout and older desktop support.
 
 ## 0.4.17 · 2026-11-01
+
+- Slide the chat prompt outline rail in from the left and slide it out when the chat narrows. When a chat has at least two prompts and is wide enough to accommodate the history indicator, the rail slides in from the left instead of popping in abruptly. When the chat narrows below the accommodation threshold, an inert copy slides out to the left, and rapid size changes reverse smoothly from the in-flight position. It uses the timeline motion setting and respects Reduce Motion.
 
 - Animate filtered projects added to and removed from the sidebar. When projects are shown or hidden using sidebar filters, their groups fade and slide into or out of place, and neighboring rows transition smoothly just like project creation and removal.
 - Cascade sidebar items in when a sidebar opens. Navigation rows, section titles, projects, workspaces and footer buttons fade and slide in one after another, top to bottom and left to right within a row, so the sidebar reads as unfolding rather than appearing at once. The Explorer does the same for its tabs and Files/Changes tree rows, mirrored to slide in from the right; other panels it hosts, such as terminals, appear with the drawer. Long lists compress the stagger so the last visible row still starts within about a quarter second. Previewing a hidden sidebar from the window edge cascades its items the same way as it slides in. It uses the sidebar motion setting and respects Reduce Motion.

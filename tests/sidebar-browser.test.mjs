@@ -89,7 +89,7 @@ try {
     console.log('settings: one continuous entrance');
     await page.close();
   }
-  for (const timing of ['retained-close', 'no-resize', 'legacy', 'rapid-press', 'finish-close', 'pointerup-commit', 'click-commit', 'frame', 'same-task', 'after-poll']) {
+  for (const timing of ['retained-close', 'no-resize', 'legacy', 'rapid-press', 'finish-close', 'native-menu', 'pointerup-commit', 'click-commit', 'frame', 'same-task', 'after-poll']) {
     const page = await browser.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(error));
@@ -136,15 +136,22 @@ try {
           host.style.display = 'block';
         }, { once: true });
       }
-      toggle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-      toggle.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
-      if (timing === 'pointerup-commit') await new Promise(resolve => setTimeout(resolve, 0));
-      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      if (timing === 'same-task') host.style.display = 'block';
-      // The bounded layout poll can finish before a delayed host commit.
-      if (timing === 'after-poll') for (let i = 0; i < 15; i++) await frame();
-      await frame();
-      if (timing !== 'same-task') host.style.display = 'block';
+      if (timing === 'native-menu') {
+        // Native menu accelerators can commit without any DOM input event.
+        await frame(); await frame();
+        toggle.setAttribute('aria-expanded', 'true');
+        host.style.display = 'block';
+      } else {
+        toggle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        toggle.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+        if (timing === 'pointerup-commit') await new Promise(resolve => setTimeout(resolve, 0));
+        toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        if (timing === 'same-task') host.style.display = 'block';
+        // The bounded layout poll can finish before a delayed host commit.
+        if (timing === 'after-poll') for (let i = 0; i < 15; i++) await frame();
+        await frame();
+        if (timing !== 'same-task') host.style.display = 'block';
+      }
       // Yield after this rendering opportunity. Sampling immediately at the
       // mutation would see full width even when no frame actually paints it.
       await new Promise(resolve => setTimeout(resolve, 0));
