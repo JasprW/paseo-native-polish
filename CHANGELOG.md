@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.22 · 2026-11-17
+
+- Stop the settings sidebar from replaying its opening animation. The entrance now runs once even when its initial width is zero.
+
+## 0.4.21 · 2026-11-17
+
+- Restore the left sidebar’s closing animation on newer Paseo layouts by placing its exit copy outside the container the host hides.
+- Keep rapid left-sidebar toggles animated. A new press preserves the current transition until the host commits, then opening or closing reverses from its visible width instead of snapping or cancelling.
+
+## 0.4.20 · 2026-11-17
+
+- Prevent a full-width flash when opening a sidebar with the menu button. Sidebar transitions now start before the host commit paints, including commits that arrive late in an animation frame or after the short layout poll ends.
+
 ## 0.4.17 · 2026-11-01
 
 - Animate filtered projects added to and removed from the sidebar. When projects are shown or hidden using sidebar filters, their groups fade and slide into or out of place, and neighboring rows transition smoothly just like project creation and removal.

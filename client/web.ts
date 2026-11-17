@@ -216,10 +216,16 @@ function panelOwner(element: Element): Element | null {
   return retained ? layoutParent(retained) ?? retained : element;
 }
 
-function panels(): Map<string, Element> {
+function panels(entries?: ReadonlyMap<Element, PanelSnapshot>): Map<string, Element> {
   const result = new Map<string, Element>();
   const resize = document.body.querySelector('[data-testid="left-sidebar-resize-handle"]');
-  if (resize?.parentElement) {
+  const leftList = resize ? null : document.body.querySelector(WORKSPACE_SCROLL);
+  // Newer hosts hide the outer gesture host, so an exit copy inside the
+  // inner width owner would be hidden with it. Overlay hosts own native motion.
+  const leftHost = (resize ?? leftList)?.closest('[id^="agent-list-gesture-host-"]');
+  if (leftHost) {
+    if (window.getComputedStyle(leftHost).getPropertyValue('position') !== 'absolute') result.set('left', leftHost);
+  } else if (resize?.parentElement) {
     // GestureDetector adds a display:contents wrapper. On touch there is also
     // an absolutely positioned handle layer. The border's parent owns width.
     // This structure remains stable when display:none makes every rect zero.
@@ -230,8 +236,8 @@ function panels(): Map<string, Element> {
   }
   // Compact headers do not mount the desktop resize handle; only discover the
   // fallback within the sidebar's own list ancestry, never arbitrary app divs.
-  if (!result.has('left')) {
-    const list = document.body.querySelector('[data-testid="sidebar-project-workspace-list-scroll"], [data-testid="sidebar-status-list-scroll"]');
+  if (!result.has('left') && !leftHost) {
+    const list = leftList ?? document.body.querySelector(WORKSPACE_SCROLL);
     let cursor = list;
     while (cursor?.parentElement) {
       const r = rect(cursor);
@@ -246,7 +252,13 @@ function panels(): Map<string, Element> {
     ['settings', '[data-testid="settings-sidebar"]'],
     ['changes-rail', '[data-testid="changes-tree-rail-tree"]'],
   ]) {
-    const el = all(document.body, selector).find(visible);
+    const candidates = all(document.body, selector);
+    // An entering width owner can measure zero during its first frame. Keep
+    // discovering it until the host actually hides or removes it.
+    const el = candidates.find(visible) ?? candidates.find(candidate => {
+      const owner = panelOwner(candidate);
+      return owner !== null && entries?.has(owner);
+    });
     const owner = el ? panelOwner(el) : null;
     if (owner) result.set(name, owner);
   }
@@ -364,7 +376,7 @@ function captureTree(target: Element): Tree | null {
 }
 
 // Keep in step with package.json. leaseMotion uses it to pick which bundle owns the window.
-const VERSION = '0.4.17';
+const VERSION = '0.4.22';
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
@@ -398,7 +410,7 @@ function installWebMotion(): () => void {
   let suspended = document.hidden || !document.hasFocus();
   let composing = false;
   const panelExits = new Set<Element>();
-  const panelEntries = new Set<Element>();
+  const panelEntries = new Map<Element, PanelSnapshot>();
   // Retained panel -> its shrinking exit copy.
   const panelCopies = new Map<Element, Element>();
   const active = new Map<Element, () => void>();
@@ -410,10 +422,21 @@ function installWebMotion(): () => void {
   const canAnimate = () => motionReady() && document.body.getAttribute('data-native-polish-peek') === null;
   const duration = () => getPreferences().pace === 'quick' ? 150 : 220;
 
-  const stopAll = () => {
-    for (const stop of Array.from(active.values())) stop();
-    for (const ghost of ghosts) ghost.remove();
-    ghosts.clear();
+  const stopAll = (preservePanels = false) => {
+    const owners = preservePanels ? [...panelEntries.keys(), ...panelExits] : [];
+    for (const [el, stop] of Array.from(active)) if (!owners.includes(el) && !hasAncestor(el, owners)) stop();
+    for (const ghost of ghosts) if (!owners.includes(ghost)) { ghost.remove(); ghosts.delete(ghost); }
+  };
+  const stopPanel = (owner: Element) => {
+    for (const [el, stop] of Array.from(active)) if (el === owner || hasAncestor(el, [owner])) stop();
+  };
+  const panelVisible = (el: Element) => {
+    if (!panelEntries.has(el)) return visible(el);
+    if (!el.isConnected) return false;
+    for (let ancestor: Element | null = el; ancestor; ancestor = ancestor.parentElement) {
+      if (window.getComputedStyle(ancestor).getPropertyValue('display') === 'none') return false;
+    }
+    return true;
   };
   function animate(el: Element, frames: Record<string, string | number>[], cleanup?: () => void, delay = 0, milliseconds = duration(), easing = EASING) {
     active.get(el)?.();
@@ -553,18 +576,19 @@ function installWebMotion(): () => void {
       ? animate(item, frames, settled, delays[index], quick ? 220 : 300, CASCADE_EASING)
       : play(registry, item, frames, settled, delays[index], quick ? 220 : 300, CASCADE_EASING));
   }
-  function revealPanel(el: Element, key: string) {
-    const width = rect(el).width;
+  function revealPanel(before: PanelSnapshot, key: string, fromWidth = 0) {
+    const el = before.element;
+    const width = before.box.width;
     if (width < 2) return;
     if (key === 'left' || key === 'explorer' || key === 'explorer-dock') cascadePanel(el, key);
     const content = Array.from(el.children).find(child => rect(child).width > width / 2) ?? panelContent(el);
     const restoreContent = content ? temporaryStyles(content, { 'min-width': `${width}px` }) : () => {};
     const restore = temporaryStyles(el, { overflow: 'hidden', 'min-width': '0', 'box-sizing': 'border-box', 'flex-shrink': '0' });
-    panelEntries.add(el);
+    panelEntries.set(el, before);
     startDiffSync();
-    animate(el, [{ width: '0px', opacity: 0.4 }, { width: `${width}px`, opacity: 1 }], () => { restoreContent(); restore(); panelEntries.delete(el); });
+    animate(el, [{ width: `${fromWidth}px`, opacity: 0.4 }, { width: `${width}px`, opacity: 1 }], () => { restoreContent(); restore(); panelEntries.delete(el); });
   }
-  function hidePanel(before: PanelSnapshot, key: string) {
+  function hidePanel(before: PanelSnapshot, key: string, fromWidth = before.box.width) {
     const el = before.element;
     if (el.isConnected && key !== 'left') {
       // The Explorer dock is retained with display:none and keeps its layout
@@ -576,7 +600,7 @@ function installWebMotion(): () => void {
       const content = panelContent(el);
       const restoreContent = content ? temporaryStyles(content, { 'min-width': `${before.box.width}px` }) : () => {};
       startDiffSync();
-      animate(el, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => { restoreContent(); restore(); panelExits.delete(el); });
+      animate(el, [{ width: `${fromWidth}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => { restoreContent(); restore(); panelExits.delete(el); });
       return;
     }
     // An unmounted Explorer (older Paseo, or the Changes rail) leaves only its
@@ -628,7 +652,7 @@ function installWebMotion(): () => void {
     // list/pane motion stays out of the exit, and a reopen can drop the copy.
     if (slot) { panelExits.add(el); panelCopies.set(el, copy); }
     startDiffSync();
-    animate(copy, [{ width: `${before.box.width}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => {
+    animate(copy, [{ width: `${fromWidth}px`, opacity: 1 }, { width: '0px', opacity: 0.3 }], () => {
       copy.remove(); ghosts.delete(copy); panelExits.delete(copy); rules?.remove(); cleanupHost();
       if (panelCopies.get(el) === copy) { panelCopies.delete(el); panelExits.delete(el); }
     });
@@ -1547,7 +1571,7 @@ function installWebMotion(): () => void {
   updateMotionFlags();
   refreshAmbient(false);
   let treeTarget: Element | null = null;
-  const visiblePanels = () => new Map(Array.from(panels()).filter(([, el]) => visible(el) && !panelExits.has(el)).map(([key, el]) => [key, panelSnapshot(el)]));
+  const visiblePanels = () => new Map(Array.from(panels(panelEntries)).filter(([, el]) => panelVisible(el) && !panelExits.has(el)).map(([key, el]) => [key, panelEntries.get(el) ?? panelSnapshot(el)]));
   const capture = (target: Element | null): Capture => ({
     panels: visiblePanels(),
     panes: paneBoxes(),
@@ -1560,29 +1584,40 @@ function installWebMotion(): () => void {
     frame = 0;
     if (!pending || !canAnimate()) return;
     const preferences = getPreferences();
-    const currentPanels = panels();
+    const currentPanels = panels(panelEntries);
     const currentPanes = paneBoxes();
     // Save the committed layout before our width animations change its rects.
     // Retain entry snapshots while their first frame temporarily has width 0.
     // A retained panel reopened mid-exit drops its shrinking copy first.
-    for (const el of currentPanels.values()) if (visible(el)) {
+    const interruptedWidths = new Map<Element, number>();
+    for (const el of currentPanels.values()) {
       const copy = panelCopies.get(el);
-      if (copy) active.get(copy)?.();
+      if (copy && panelVisible(el)) {
+        interruptedWidths.set(el, rect(copy).width);
+        active.get(copy)?.();
+      }
+      if (panelEntries.has(el) && !panelVisible(el)) {
+        // display:none zeros the rect, but the animation's computed width
+        // still records where the interrupted entrance reached.
+        interruptedWidths.set(el, parseFloat(window.getComputedStyle(el).getPropertyValue('width')) || 0);
+        stopPanel(el);
+      }
     }
     const nextPanels = new Map<string, PanelSnapshot>();
     for (const [key, el] of currentPanels) {
       if (panelExits.has(el)) continue;
       const old = pending.panels.get(key);
-      if (panelEntries.has(el) && old?.element === el) nextPanels.set(key, old);
+      if (panelEntries.has(el)) nextPanels.set(key, panelEntries.get(el)!);
       else if (visible(el)) nextPanels.set(key, old?.element === el ? old : panelSnapshot(el));
     }
     if (preferences.sidebars) {
       for (const [key, before] of pending.panels) {
         const after = currentPanels.get(key);
-        if ((!after || !visible(after)) && !panelExits.has(before.element) && !panelEntries.has(before.element)) hidePanel(before, key);
+        if ((!after || !panelVisible(after)) && !panelExits.has(before.element)) hidePanel(before, key, interruptedWidths.get(before.element));
       }
       for (const [key, after] of currentPanels) if (visible(after) && !pending.panels.has(key)) {
-        if (!panelExits.has(after) && !panelEntries.has(after)) revealPanel(after, key);
+        const next = nextPanels.get(key);
+        if (next && !panelExits.has(after) && !panelEntries.has(after)) revealPanel(next, key, interruptedWidths.get(after));
       }
     }
     // FLIP runs once per maximize/restore commit. Reading transformed rects
@@ -1706,6 +1741,7 @@ function installWebMotion(): () => void {
   }
   const observer = new MutationObserver(records => {
     if (disposed || suspended) return;
+    let shellChanged = false;
     for (const record of records) {
       const target = elementOf(record.target);
       const structural = record.type === 'childList';
@@ -1725,6 +1761,7 @@ function installWebMotion(): () => void {
       // Offset/clip/translate writes belong solely to the elastic adapter.
       // Host spinner leaf styles likewise do not invalidate whole layouts.
       if (record.attributeName === 'style' && target.closest('[data-native-polish-elastic]')) continue;
+      if (pending && !shellChanged && !target.closest(CHAT + ', ' + WORKSPACE_SCROLL + ', ' + FILE_TREE + ', ' + CHANGE_TREE + ', ' + TAB_ROW + ', ' + FLOATING)) shellChanged = true;
       if (record.attributeName === 'data-status-bucket') { scheduleAmbient(['agents']); continue; }
       // Reused dialog portal surfaces open by gaining role="dialog".
       if (record.attributeName === 'role') { scheduleAmbient(['floating', 'controls']); continue; }
@@ -1745,6 +1782,23 @@ function installWebMotion(): () => void {
       } else if (structural || target.matches(PANE) || target.querySelector(PANE)) {
         // Shell commits may mount/remove any surface, including portal menus.
         scheduleAmbient();
+      }
+    }
+    // A host commit can run after our rAF callback in the same frame. Waiting
+    // for another rAF would paint the fully open dock before its first frame.
+    // Only visibility changes consume the capture here; other layout work
+    // stays batched, and our own animation/style mutations cannot replay it.
+    if (shellChanged && pending && canAnimate() && getPreferences().sidebars) {
+      const before = pending.panels;
+      const current = panels(panelEntries);
+      const entering = Array.from(current).some(([key, el]) => visible(el) && !before.has(key) && !panelEntries.has(el) && (!panelExits.has(el) || panelCopies.has(el)));
+      const exiting = Array.from(before).some(([key, before]) => {
+        const el = current.get(key);
+        return (!el || !panelVisible(el)) && !panelExits.has(before.element);
+      });
+      if (entering || exiting) {
+        window.cancelAnimationFrame(frame);
+        flush();
       }
     }
   });
@@ -1788,9 +1842,11 @@ function installWebMotion(): () => void {
     if (target && (disclosureFor(target)?.closest(WORKSPACE_SCROLL) || target.closest(
       '[data-testid*="sidebar-"][data-testid*="show-more"], [data-testid^="sidebar-host-filter-"], [data-testid^="sidebar-label-filter-"], [data-testid^="sidebar-grouping-"]'
     ))) workspaceQuietUntil = Date.now() + 900;
-    // Finish interrupted motion before measuring the next layout. No delayed
-    // input handlers: the host receives the original click/key immediately.
-    stopAll();
+    // A toggle press precedes the host commit. Keep its drawer moving until
+    // that commit can reverse it from its current width, including exit copies.
+    const sidebarToggle = Boolean(target?.closest('[data-testid="menu-button"]'))
+      || Boolean(event.key && (event.metaKey || event.ctrlKey) && ['b', '.'].includes(event.key.toLowerCase()));
+    stopAll(sidebarToggle);
     window.cancelAnimationFrame(passiveFrame); passiveFrame = 0; dirty.clear();
     refreshAmbient(false);
     if (!event.key && event.clientX !== undefined && event.clientY !== undefined) pointerOrigin = { x: event.clientX, y: event.clientY };

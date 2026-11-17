@@ -1,7 +1,7 @@
 {
   "name": "paseo-native-polish",
   "private": true,
-  "version": "0.4.17",
+  "version": "0.4.22",
   "files": [
     "paseo-plugin.json",
     "OVERVIEW.md",
@@ -14,12 +14,14 @@
     "test:motion-runtime": "node --experimental-strip-types tests/motion-runtime.test.mjs",
     "test:sidebar-cascade": "node --experimental-strip-types tests/sidebar-cascade.test.mjs",
     "test:tree-motion": "node --experimental-strip-types tests/tree-motion.test.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:sidebar-browser": "node tests/sidebar-browser.test.mjs"
   },
   "devDependencies": {
     "@getpaseo/plugin": "0.11.2",
     "@tanstack/react-query": "^5.90.11",
     "@types/react": "~19.2.0",
+    "playwright": "^1.61.1",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "typescript": "^5.9.3",
