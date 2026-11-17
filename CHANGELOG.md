@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.22 · 2026-11-17
+
+- Stop the settings sidebar from replaying its opening animation. The entrance now runs once even when its initial width is zero.
+
+## 0.4.21 · 2026-11-17
+
+- Restore the left sidebar’s closing animation on newer Paseo layouts by placing its exit copy outside the container the host hides.
+- Keep rapid left-sidebar toggles animated. A new press preserves the current transition until the host commits, then opening or closing reverses from its visible width instead of snapping or cancelling.
+
+## 0.4.20 · 2026-11-17
+
+- Prevent a full-width flash when opening a sidebar with the menu button. Sidebar transitions now start before the host commit paints, including commits that arrive late in an animation frame or after the short layout poll ends.
 ## 0.4.19 · 2026-11-13
 
 - Restore keyboard-triggered opening and closing for both sidebars on Paseo 0.16.0-beta.2. Sidebar commits now use the layout captured on Cmd/Ctrl press, or the last settled layout when a native menu accelerator bypasses DOM keyboard events. Releasing the modifier before the layout commit and repeated toggles under one modifier hold retain their transitions.
