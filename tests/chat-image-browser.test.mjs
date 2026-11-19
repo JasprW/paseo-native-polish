@@ -1,27 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
-import ts from 'typescript';
+import { compileBrowserModule as compile } from './browser-module-loader.mjs';
 
-const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-const modules = new Map([
-  ['react-native', moduleUrl('export const Platform = { OS: "web" };')],
-  ['react', moduleUrl('export function useSyncExternalStore() {}')],
-]);
-async function compile(url) {
-  if (modules.has(url.href)) return modules.get(url.href);
-  let source = ts.transpileModule(await readFile(url, 'utf8'), {
-    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
-  }).outputText;
-  for (const match of [...source.matchAll(/from ["']([^"']+)["']/g)]) {
-    const specifier = match[1];
-    const dependency = modules.get(specifier) ?? await compile(new URL(`${specifier}.ts`, url));
-    source = source.replace(match[0], `from "${dependency}"`);
-  }
-  const compiled = moduleUrl(source);
-  modules.set(url.href, compiled);
-  return compiled;
-}
 const adapter = await compile(new URL('../client/web.ts', import.meta.url));
 const preferences = await compile(new URL('../client/preferences.ts', import.meta.url));
 const browser = await chromium.launch({

@@ -1,27 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
-import ts from 'typescript';
+import { compileBrowserModule as compile } from './browser-module-loader.mjs';
 
-const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-const modules = new Map([
-  ['react-native', moduleUrl('export const Platform = { OS: "web" };')],
-  ['react', moduleUrl('export function useSyncExternalStore() {}')],
-]);
-async function compile(url) {
-  if (modules.has(url.href)) return modules.get(url.href);
-  let source = ts.transpileModule(await readFile(url, 'utf8'), {
-    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
-  }).outputText;
-  for (const match of [...source.matchAll(/from ["']([^"']+)["']/g)]) {
-    const specifier = match[1];
-    const dependency = modules.get(specifier) ?? await compile(new URL(`${specifier}.ts`, url));
-    source = source.replace(match[0], `from "${dependency}"`);
-  }
-  const compiled = moduleUrl(source);
-  modules.set(url.href, compiled);
-  return compiled;
-}
 const adapter = await compile(new URL('../client/web.ts', import.meta.url));
 const preferences = await compile(new URL('../client/preferences.ts', import.meta.url));
 const browser = await chromium.launch({
@@ -54,6 +34,14 @@ try {
     const anchor = document.getElementById('anchor');
     const tail = document.getElementById('tail');
     const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const waitForDetailMotion = async () => {
+      const deadline = performance.now() + 2000;
+      do {
+        await frame();
+        if (!content.style.transform && !document.querySelector('#detail [data-native-polish-ghost]')) return;
+      } while (performance.now() < deadline);
+      throw new Error('Thinking text reveal and scroll rise did not settle');
+    };
     box.scrollTop = box.scrollHeight - box.clientHeight;
     await frame(); await frame();
     const snapshot = () => ({ anchor: anchor.getBoundingClientRect().top, scrollTop: box.scrollTop, scrollHeight: box.scrollHeight, contentHeight: content.getBoundingClientRect().height, transform: content.style.transform });
@@ -68,11 +56,12 @@ try {
     const afterSecond = snapshot();
     await frame();
     const nextFrame = snapshot();
-    await new Promise(resolve => setTimeout(resolve, 650));
+    await waitForDetailMotion();
     tail.append('\n' + Array.from({ length: 20 }, (_, index) => `extra ${index}`).join('\n'));
-    await new Promise(resolve => setTimeout(resolve, 650));
+    await waitForDetailMotion();
     box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight - 100);
     box.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -80 }));
+    // Wait past the wheel quiet interval so it cannot mask a follow-output jump.
     await new Promise(resolve => setTimeout(resolve, 400));
     const manualBefore = box.scrollTop;
     tail.append('\nlatest one');

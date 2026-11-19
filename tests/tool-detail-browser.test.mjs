@@ -1,32 +1,13 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
-import ts from 'typescript';
+import { createBrowserModuleLoader } from './browser-module-loader.mjs';
 
-const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-const modules = new Map([
-  ['react-native', moduleUrl('export const Platform = { OS: "web" };')],
-  ['react', moduleUrl('export function useSyncExternalStore() {}')],
-]);
-async function compile(url) {
-  if (modules.has(url.href)) return modules.get(url.href);
-  let source = ts.transpileModule(await readFile(url, 'utf8'), {
-    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
-  }).outputText;
-  if (url.pathname.endsWith('/client/web.ts')) {
-    const seam = '    function timelineFor(chat, rows) {';
-    assert.ok(source.includes(seam));
-    source = source.replace(seam, '    globalThis.testContentRise = { create: createContentRise, active: contentRises, riseFor, timelineRises, footerRises };\n' + seam);
-  }
-  for (const match of [...source.matchAll(/from ["']([^"']+)["']/g)]) {
-    const specifier = match[1];
-    const dependency = modules.get(specifier) ?? await compile(new URL(`${specifier}.ts`, url));
-    source = source.replace(match[0], `from "${dependency}"`);
-  }
-  const compiled = moduleUrl(source);
-  modules.set(url.href, compiled);
-  return compiled;
-}
+const compile = createBrowserModuleLoader((source, url) => {
+  if (!url.pathname.endsWith('/client/web.ts')) return source;
+  const seam = '    function timelineFor(chat, rows) {';
+  assert.ok(source.includes(seam));
+  return source.replace(seam, '    globalThis.testContentRise = { create: createContentRise, active: contentRises, riseFor, timelineRises, footerRises };\n' + seam);
+});
 const adapter = await compile(new URL('../client/web.ts', import.meta.url));
 const preferences = await compile(new URL('../client/preferences.ts', import.meta.url));
 const browser = await chromium.launch({
@@ -186,7 +167,6 @@ try {
     row.parentElement.insertBefore(newRow, document.querySelector('[data-testid="turn-working-indicator"]'));
     await frame(); await frame();
     const withRowEntrance = [...window.summaryAnimations];
-    window.disposeMotion();
     return { entered, remounted, labelUpdates, afterDisabled, withRowEntrance };
   });
   assert.deepEqual(summary.entered, ['live'], 'only the new live summary eases in');
@@ -197,6 +177,40 @@ try {
   ], 'summary text and shimmer rise together at the slower pace');
   assert.deepEqual(summary.afterDisabled, ['live'], 'disabled timeline motion does not replay when re-enabled');
   assert.deepEqual(summary.withRowEntrance, ['live', 'row'], 'the row entrance owns motion when both arrive together');
+  const occlusion = await summaryPage.evaluate(async () => {
+    const chat = document.querySelector('[data-testid="agent-chat-scroll"]');
+    const [coveredLabel, uncoveredLabel] = Array.from(chat.querySelectorAll('[data-summary]'))
+      .slice(0, 2).map(tool => tool.querySelector('span + div'));
+    const hasShimmer = label => Boolean(label.querySelector('[data-native-polish-shimmer-overlay]'));
+    for (const label of [coveredLabel, uncoveredLabel]) {
+      label.firstElementChild.style.setProperty('--paseo-shimmer', '1');
+    }
+    chat.setAttribute('aria-modal', 'true');
+    const descendant = document.createElement('span');
+    descendant.setAttribute('aria-modal', 'true');
+    descendant.style.cssText = 'display:inline-block;width:30px;height:12px';
+    uncoveredLabel.appendChild(descendant);
+    const sheet = document.createElement('div');
+    const bounds = coveredLabel.getBoundingClientRect();
+    sheet.style.cssText = `position:fixed;top:${bounds.top}px;left:${bounds.left}px;width:20px;height:12px`;
+    sheet.innerHTML = '<div><button data-testid="tool-call-sheet-close" style="width:10px;height:10px;padding:0"></button></div>';
+    const originalQuery = document.body.querySelectorAll;
+    let sheetScans = 0;
+    document.body.querySelectorAll = function(selector) {
+      if (selector.includes('[data-testid="tool-call-sheet-close"]')) sheetScans++;
+      return originalQuery.call(this, selector);
+    };
+    try {
+      chat.appendChild(sheet);
+      await Promise.resolve();
+      return { covered: hasShimmer(coveredLabel), uncovered: hasShimmer(uncoveredLabel), sheetScans };
+    } finally {
+      delete document.body.querySelectorAll;
+      window.disposeMotion();
+    }
+  });
+  assert.deepEqual(occlusion, { covered: false, uncovered: true, sheetScans: 1 },
+    'the tool update scans sheets once and excludes ancestor and descendant surfaces');
   await summaryPage.close();
 
   for (const { wrappedHeader, badge, nested, omitAria, displayContents } of [

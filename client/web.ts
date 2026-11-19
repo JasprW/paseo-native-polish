@@ -685,19 +685,30 @@ function installWebMotion(): () => void {
     for (const el of all(copy, 'iframe, video, audio, input, textarea')) el.remove();
     return copy;
   }
-  function collectOccluderRects(target: Element, selector: string): Rect[] {
-    const boxes: Rect[] = [];
-    const seen = new Set<Element>();
-    const add = (el: Element | null) => {
-      if (!el || seen.has(el) || el === target || el.closest('[data-native-polish-ghost]')) return;
-      if (el.contains?.(target) || hasAncestor(target, [el]) || !visible(el)) return;
-      seen.add(el);
-      boxes.push(rect(el));
+  function collectVisibleOccluders(selector: string): Map<Element, Rect> {
+    const boxes = new Map<Element, Rect>();
+    const add = (el: Element) => {
+      if (boxes.has(el) || el.closest('[data-native-polish-ghost]')) return;
+      const box = rect(el);
+      if (el.isConnected && box.width > 1 && box.height > 1 && box.bottom > 0 && box.top < window.innerHeight) {
+        boxes.set(el, box);
+      }
     };
     for (const el of all(document.body, selector)) add(el);
     for (const closeBtn of all(document.body, '[data-testid="tool-call-sheet-close"], [data-testid="tool-call-group-sheet-close"]')) {
       if (!visible(closeBtn)) continue;
       add(closeBtn.parentElement?.parentElement ?? closeBtn.parentElement ?? closeBtn);
+    }
+    return boxes;
+  }
+  function occluderRectsFor(target: Element, occluders: ReadonlyMap<Element, Rect>, includeDescendants: boolean): Rect[] {
+    const boxes: Rect[] = [];
+    for (const [el, box] of occluders) {
+      if (el === target || (el.contains?.(target) ?? hasAncestor(target, [el]))) continue;
+      // Labels ignore their own child surfaces. Text reveals also clip against
+      // overlays within their owner, such as tooltips over freshly added text.
+      if (!includeDescendants && (target.contains?.(el) ?? hasAncestor(el, [target]))) continue;
+      boxes.push(box);
     }
     return boxes;
   }
@@ -2082,6 +2093,7 @@ function installWebMotion(): () => void {
     const slots: Element[] = [];
     const hydratingSlots = new Set<Element>();
     const now = Date.now();
+    let modalOccluders: Map<Element, Rect> | undefined;
     for (const tool of live(TOOL).slice(-80)) {
       const header = firstBoxChild(tool);
       if (!header) continue;
@@ -2141,13 +2153,11 @@ function installWebMotion(): () => void {
         }
         const hasHostShimmer = all(header, '[style*="--paseo-shimmer"]').length > 0;
         const hasPlaceholder = Boolean(header.querySelector('[data-testid="tool-call-summary-placeholder"]'));
-        const labelOccluded = isRectOccluded(rect(labelRow), collectOccluderRects(labelRow, MODAL_OCCLUDER));
         const shouldShimmer =
           canAnimate()
           && !toolChatHydrating
           && getPreferences().timeline
           && Boolean(current.primary)
-          && !labelOccluded
           && shouldKeepToolShimmerActive({
             hasHostShimmer,
             hasPlaceholder,
@@ -2155,7 +2165,11 @@ function installWebMotion(): () => void {
             isTopLevelTool,
             isTurnRunning: Boolean(tail?.isTurnRunning),
             isLastTimelineItem,
-          });
+          })
+          && !isRectOccluded(
+            rect(labelRow),
+            occluderRectsFor(labelRow, modalOccluders ??= collectVisibleOccluders(MODAL_OCCLUDER), false),
+          );
         let overlay = labelRow.querySelector('[data-native-polish-shimmer-overlay]');
         let primaryShimmer: Element | null = null;
         let secondaryShimmer: Element | null = null;
@@ -2246,12 +2260,11 @@ function installWebMotion(): () => void {
     toolLabels = nextLabels;
     toolGroupItems = nextGroupItems;
   }
-  function createContentRise(element: Element): ContentRise {
+  function createContentRise(element: Element, clipOverflow = false): ContentRise {
     let offset = 0;
     let animationFrame = 0;
     let lastFrameTime: number | null = null;
     let restoreParentClip: (() => void) | null = null;
-    const isTimeline = element.matches(CHAT_TIMELINE);
     const applyOffset = (next: number) => {
       offset = next;
       if (!element.isConnected) {
@@ -2264,7 +2277,9 @@ function installWebMotion(): () => void {
         restoreParentClip?.();
         restoreParentClip = null;
       } else {
-        if (isTimeline && !restoreParentClip && element.parentElement) {
+        // Both tagged timelines and Paseo's untagged row parent can extend
+        // the chat's scrollHeight when translated past the end of the content.
+        if (clipOverflow && !restoreParentClip && element.parentElement) {
           const parent = element.parentElement;
           const parentStyle = window.getComputedStyle(parent);
           const overflowY = (parentStyle.getPropertyValue('overflow-y') || parentStyle.getPropertyValue('overflow')).trim();
@@ -2338,7 +2353,7 @@ function installWebMotion(): () => void {
     if (!element) return null;
     const existing = cache.get(element);
     if (existing) return existing;
-    const created = createContentRise(element);
+    const created = createContentRise(element, cache === timelineRises);
     cache.set(element, created);
     return created;
   }
@@ -2494,7 +2509,7 @@ function installWebMotion(): () => void {
     const slice = textSliceRange(reveal.owner, reveal.startOffset, reveal.endOffset);
     if (!slice) return false;
     const clipBounds = reveal.clipBoxes.filter(el => el.isConnected).map(rect);
-    const occludingRects = collectOccluderRects(reveal.owner, OVERLAY_OCCLUDER);
+    const occludingRects = occluderRectsFor(reveal.owner, collectVisibleOccluders(OVERLAY_OCCLUDER), true);
     const rawBoxes = Array.from(slice.range.getClientRects()).filter(box => box.width > 0 && box.height > 0);
     const boxes = resolveToolDetailRevealBoxes({
       glyphBoxes: rawBoxes,

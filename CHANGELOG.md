@@ -13,6 +13,7 @@
 - Keep Thinking text clipped during successive height updates to prevent flicker while it streams.
 - Keep long user messages readable while Paseo's expansion control is unavailable.
 - Keep overlapping streamed-text reveals aligned until the last reveal finishes.
+- Keep the chat at its real bottom when sending a message so it does not scroll too far and snap back.
 - Stop follow-output motion when scrolling upward so the conversation stays still during manual scrolling.
 - Ease new live tool summaries into view, while leaving loaded history and remounted summaries still.
 - Keep tool details visible inside their collapsing group when closed, including their scrolled position and styles.
