@@ -71,6 +71,7 @@ interface TextRange {
 interface Element {
   nodeType: number; parentElement: Element | null; nextElementSibling: Element | null; children: ArrayLike<Element>;
   style: Style; isConnected: boolean; textContent: string | null;
+  complete?: boolean;
   scrollTop: number; scrollLeft: number; scrollHeight: number; clientWidth: number; clientHeight: number;
   closest(selector: string): Element | null;
   matches(selector: string): boolean;
@@ -267,6 +268,7 @@ const OVERLAY_OCCLUDER =
   '[data-testid="composer-parent-agent-pill"]';
 const CHAT = '[data-testid="agent-chat-scroll"]';
 const HISTORY_ROW = '[data-history-row-id]';
+const CHAT_IMAGE_CONTENT = '[data-testid="native-polish-streaming-assistant"], [data-testid="assistant-message"], [data-testid="user-message"], [data-testid="tool-call-badge"]';
 const OUTLINE_RAIL = `[data-testid="${OUTLINE_RAIL_TEST_ID}"]`;
 const OUTLINE_PREVIEW = `[data-testid="${OUTLINE_PREVIEW_TEST_ID}"]`;
 const CHAT_TIMELINE = '[data-testid="agent-chat-timeline"]';
@@ -474,7 +476,10 @@ function disclosureFor(target: Element): Element | null {
     // Only the header toggles disclosure. Detail links, selection, file-open
     // buttons and nested tools keep their own existing behavior.
     const header = Array.from(tool.children)[0];
-    if (header && target.closest('[role="button"]') === header) return tool;
+    const button = target.closest('button, [role="button"]');
+    // Newer hosts wrap the disclosure and file-open buttons in one header.
+    if (header && button && (button === header ||
+      (hasAncestor(button, [header]) && (button === firstBoxChild(header) || button.getAttribute('aria-expanded') !== null)))) return tool;
   }
   const project = target.closest(PROJECT);
   if (project && target.closest('[role="button"]') === project) return project.closest('[role="group"]');
@@ -1139,6 +1144,7 @@ function installWebMotion(): () => void {
   interface ContentRise { start(distance: number): void; prepare(distance: number): void; cancel(): void; getOffset(): number }
   interface ChatHeightAnimationToken { element: Element }
   const chats = new WeakMap<Element, ChatState>();
+  const chatQuestions = new WeakMap<Element, { contextKey: string; present: boolean; resolutionUntil: number; answerUntil: number; submitUntil: number; localAnswerRowId: string | null }>();
   let visibleChats = new Set<Element>();
   const hydrationTimers = new Map<Element, number>();
   const seenWorkedFooterNodes = new WeakSet<Element>();
@@ -1148,6 +1154,9 @@ function installWebMotion(): () => void {
   const footerRises = new WeakMap<Element, ContentRise>();
   const toolDetailRises = new WeakMap<Element, ContentRise>();
   const contentRises = new Set<ContentRise>();
+  const chatImageSeen = new WeakMap<Element, { contextKey: string; rows: Map<string, Set<number>> }>();
+  const chatImageRecentRows = new WeakMap<Element, Map<string, number>>();
+  const imagePlaceholders = new Map<Element, () => void>();
   interface ToolDetailTextState {
     text: string;
     owner: Element;
@@ -2631,6 +2640,9 @@ function installWebMotion(): () => void {
           inFlightHeight: previous.box === layout.box ? layout.inFlightHeight : null,
         });
         if (heightTransition) {
+          // Finish the old owner before saving the new temporary styles, or
+          // its cleanup can remove the replacement animation's clipping.
+          active.get(layout.box)?.();
           const finishChatHeight = beginChatHeightAnimation(detailChat, layout.box);
           const restore = temporaryStyles(layout.box, heightTransition.styles);
           animate(layout.box, heightTransition.keyframes, (cancelled) => {
@@ -2674,12 +2686,12 @@ function installWebMotion(): () => void {
           : isToolDetail && isStreaming && !manualDisclosure && text.length > 0 && text.length <= 48
             ? ''
             : undefined;
-      const transition = allowTextReveal ? toolDetailTextTransition(baselineText, text) : null;
+      const transition = allowTextReveal ? toolDetailTextTransition(baselineText, text, getPreferences().pace) : null;
       if (!(isToolDetail ? canAnimateDetail : canAnimateTextReveal) || !transition) continue;
 
       // Cover only the appended glyph rectangles with a paired backdrop-blur
-      // layer and background-coloured tint layer, then fade them away over
-      // 400ms. Keeping `root` and `blurLayer` at opacity 1 avoids creating a
+      // layer and background-coloured tint layer, then fade them together
+      // at the selected pace. Keeping `root` and `blurLayer` at opacity 1 avoids creating a
       // CSS Backdrop Root while the host remains the sole text painter.
       if (!textSliceRange(owner, transition.enteringStart, transition.enteringEnd)) continue;
       const host = detail;
@@ -2865,14 +2877,18 @@ function installWebMotion(): () => void {
     }
     return sig;
   }
-  function cancelChatMotion(chat: Element, rows: Element[], purgeToolText: boolean) {
+  function cancelChatMotion(chat: Element, rows: Element[], purgeToolText: boolean, preserveLocalAnswer = false) {
     const timeline = timelineFor(chat, rows);
     const footer = footerFor(chat);
     if (timeline) riseFor(timelineRises, timeline)?.cancel();
     if (footer) riseFor(footerRises, footer)?.cancel();
     chatDisclosureQuietUntil.delete(chat);
     chatHeightAnimations.delete(chat);
+    const question = chatQuestions.get(chat);
+    const localAnswer = preserveLocalAnswer && question && Date.now() < question.submitUntil
+      ? rows.find(row => row.getAttribute('data-history-row-id') === question.localAnswerRowId) : null;
     for (const [el, stop] of Array.from(active.entries())) {
+      if (localAnswer && (el === localAnswer || hasAncestor(el, [localAnswer]))) continue;
       if (el === chat || hasAncestor(el, [chat])) stop();
     }
     for (const reveal of Array.from(toolDetailReveals)) {
@@ -2936,6 +2952,217 @@ function installWebMotion(): () => void {
       }
     }
   }
+  function clearImagePlaceholders() {
+    for (const cleanup of Array.from(imagePlaceholders.values())) cleanup();
+  }
+  function showImagePlaceholder(image: Element, surface: Element) {
+    if (imagePlaceholders.has(image)) return;
+    let placeholder: Element | null = null;
+    let restore = () => {};
+    if (surface !== image) {
+      const restorePosition = retainRevealHostPosition(surface);
+      const box = rect(surface);
+      const restoreSize = temporaryStyles(surface, {
+        ...(box.width < 1 ? { 'min-width': '48px' } : {}),
+        ...(box.height < 1 ? { 'min-height': '48px' } : {}),
+      });
+      restore = () => { restoreSize(); restorePosition(); };
+      placeholder = document.createElement('div');
+      placeholder.setAttribute('data-native-polish-image-placeholder', '');
+      placeholder.setAttribute('data-native-polish-ghost', '');
+      placeholder.setAttribute('aria-hidden', 'true');
+      placeholder.setAttribute('inert', '');
+      for (const [key, value] of Object.entries({
+        position: 'absolute', inset: '0', 'pointer-events': 'none',
+        'border-radius': 'inherit', 'background-color': 'var(--colors-surface2, rgba(127, 127, 127, .16))',
+      })) placeholder.style.setProperty(key, value, 'important');
+      surface.appendChild(placeholder);
+    } else {
+      const box = rect(image);
+      restore = temporaryStyles(image, {
+        'background-color': 'var(--colors-surface2, rgba(127, 127, 127, .16))',
+        ...(box.width < 1 ? { 'min-width': '48px' } : {}),
+        ...(box.height < 1 ? { 'min-height': '48px' } : {}),
+      });
+      image.setAttribute('data-native-polish-image-placeholder', '');
+    }
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      image.removeEventListener('load', loaded);
+      image.removeEventListener('error', failed);
+      if (placeholder) active.get(placeholder)?.();
+      placeholder?.remove();
+      if (!placeholder) image.removeAttribute('data-native-polish-image-placeholder');
+      restore();
+      imagePlaceholders.delete(image);
+    };
+    const loaded: Listener = () => {
+      if (placeholder && canAnimate() && getPreferences().messages) {
+        animate(placeholder, [{ opacity: 1 }, { opacity: 0 }], cleanup, 0, 160);
+      } else cleanup();
+    };
+    const failed: Listener = () => cleanup();
+    imagePlaceholders.set(image, cleanup);
+    image.addEventListener('load', loaded);
+    image.addEventListener('error', failed);
+    if (image.complete !== false) cleanup();
+  }
+  function syncChatImages(chatsToScan: Element[], allow: boolean) {
+    const observed = new Set<Element>();
+    const preferences = getPreferences();
+    const now = Date.now();
+    for (const chat of chatsToScan) {
+      const state = chats.get(chat);
+      if (!state) continue;
+      let seen = chatImageSeen.get(chat);
+      if (!seen || seen.contextKey !== state.contextKey) {
+        if (seen) chatImageRecentRows.delete(chat);
+        seen = { contextKey: state.contextKey, rows: new Map() };
+        chatImageSeen.set(chat, seen);
+      }
+      const rows = all(chat, HISTORY_ROW);
+      const lastRow = rows[rows.length - 1];
+      const viewport = rect(chat);
+      for (const row of rows.slice(-80)) {
+        const rowId = row.getAttribute('data-history-row-id');
+        let indices = rowId ? seen.rows.get(rowId) : undefined;
+        if (rowId && !indices) { indices = new Set(); seen.rows.set(rowId, indices); }
+        const images: Array<{ image: Element | null; surface: Element }> = [];
+        for (const node of all(row, 'img, [role="progressbar"]').slice(0, 80)) {
+          if (images.length >= 20) break;
+          const content = node.closest(CHAT_IMAGE_CONTENT);
+          if (!content || node.closest('[data-native-polish-ghost]')) continue;
+          const parent = node.parentElement;
+          if (!node.matches('img')) {
+            // Paseo's waiting assistant image has no image node until its
+            // source is acquired, but its centered spinner owns a 160px frame.
+            if (!parent || !content.matches('[data-testid="assistant-message"], [data-testid="native-polish-streaming-assistant"]') ||
+                parent.children.length !== 1 || parent.children[0] !== node || parent.textContent?.trim()) continue;
+            const style = window.getComputedStyle(parent);
+            if (!(parseFloat(style.getPropertyValue('min-height')) >= 159) || rect(parent).height < 150 ||
+                style.getPropertyValue('align-items') !== 'center' || style.getPropertyValue('justify-content') !== 'center') continue;
+            images.push({ image: null, surface: parent });
+            continue;
+          }
+          const role = node.closest('[role="img"]');
+          const painted = parent?.children[0];
+          // React Native Web paints the image as a sibling background and
+          // keeps the actual img transparent for accessibility and loading.
+          const nativeWebSurface = Boolean(parent && painted && parent.children[1] === node &&
+            painted.matches('div') && window.getComputedStyle(node).getPropertyValue('opacity') === '0' &&
+            window.getComputedStyle(painted).getPropertyValue('background-image').startsWith('url('));
+          const surface = role && role !== node && hasAncestor(role, [row]) ? role
+            : nativeWebSurface && parent ? parent
+            : parent && parent !== content && parent.children.length === 1 && !(parent.textContent?.trim()) ? parent
+              : node;
+          images.push({ image: node, surface });
+        }
+        images.forEach(({ image, surface }, index) => {
+          if (image) observed.add(image);
+          const isNew = Boolean(indices && !indices.has(index));
+          indices?.add(index);
+          if (image) {
+            const pending = image.complete === false && Boolean(image.getAttribute('src') || image.getAttribute('srcset'));
+            const hostLoading = Boolean(surface.querySelector('[role="progressbar"], [aria-busy="true"]'));
+            if (pending && preferences.enabled && preferences.messages && !hostLoading) showImagePlaceholder(image, surface);
+            else if ((!pending || !preferences.enabled || !preferences.messages || hostLoading) && imagePlaceholders.has(image)) imagePlaceholders.get(image)?.();
+          }
+          const box = rect(surface);
+          const onScreen = box.width > 1 && box.height > 1 && box.bottom > viewport.top && box.top < viewport.bottom;
+          const recentRow = rowId ? (chatImageRecentRows.get(chat)?.get(rowId) ?? 0) > now : false;
+          if (isNew && allow && canAnimate() && preferences.messages && row === lastRow &&
+              (state.running || recentRow) && !state.userScrolledUp && now >= quietUntil &&
+              now >= state.hydrationQuietUntil && !active.has(row) && !active.has(surface) && onScreen) {
+            animate(surface, [{ opacity: 0, translate: '0 6px' }, { opacity: 1, translate: '0 0' }], undefined, 0, 220);
+          }
+        });
+      }
+      while (seen.rows.size > 1000) seen.rows.delete(seen.rows.keys().next().value!);
+    }
+    for (const [image, cleanup] of imagePlaceholders) if (!observed.has(image) || !image.isConnected) cleanup();
+  }
+  const chatPromptSeen = new WeakMap<Element, { contextKey: string; nodes: WeakSet<Element> }>();
+  function syncChatPrompts(chatsToScan: Element[], allow: boolean) {
+    const now = Date.now();
+    for (const chat of chatsToScan) {
+      const state = chats.get(chat);
+      if (!state) continue;
+      let seen = chatPromptSeen.get(chat);
+      if (!seen || seen.contextKey !== state.contextKey) {
+        seen = { contextKey: state.contextKey, nodes: new WeakSet() };
+        chatPromptSeen.set(chat, seen);
+      }
+      const candidates = new Set<Element>();
+      for (const marker of all(chat, '[data-testid="question-form-card"], [data-testid="permission-request-question"]').slice(-40)) {
+        // Permission cards have no root test ID; the question and actions
+        // share their container, or belong to a tagged plan card.
+        const prompt = marker.matches('[data-testid="question-form-card"]') ? marker
+          : marker.closest('[data-testid="permission-plan-card"]') ?? marker.parentElement;
+        if (prompt && !prompt.closest('[data-native-polish-ghost]')) candidates.add(prompt);
+      }
+      const viewport = rect(chat);
+      for (const prompt of candidates) {
+        const isNew = !seen.nodes.has(prompt);
+        seen.nodes.add(prompt);
+        if (!isNew || !allow || !canAnimate() || !getPreferences().messages ||
+            now < state.hydrationQuietUntil || now < quietUntil ||
+            active.has(prompt) || hasAncestor(prompt, candidates) || hasAncestor(prompt, active.keys())) continue;
+        const box = rect(prompt);
+        if (visible(prompt) && box.bottom > viewport.top && box.top < viewport.bottom) {
+          animate(prompt, [{ opacity: 0, translate: '0 6px' }, { opacity: 1, translate: '0 0' }]);
+        }
+      }
+    }
+  }
+  function enterMessage(row: Element, chat: Element, isUserMessage: boolean, delayMs: number, followsQuestion: boolean, timelineRise: ContentRise | null, footerRise: ContentRise | null) {
+    const enter = () => {
+      const motion = messageEntranceMotion(isUserMessage);
+      const restore = motion.styles ? temporaryStyles(row, motion.styles) : undefined;
+      animate(row, motion.keyframes, restore, delayMs, 320);
+    };
+    const moving = () => Math.max(Math.abs(timelineRise?.getOffset() ?? 0), Math.abs(footerRise?.getOffset() ?? 0)) > 2;
+    if (!followsQuestion || (!moving() && !chat.querySelector('[data-testid="question-form-card"]'))) {
+      enter();
+      return;
+    }
+    // Keep the answer out of the question's layout/scroll handoff, then
+    // reveal it from its settled position instead of spending its fade there.
+    active.get(row)?.();
+    const restore = temporaryStyles(row, { opacity: '0' });
+    const started = Date.now();
+    let stableSince = started;
+    let previousTop = rect(row).top;
+    let previousScroll = chat.scrollTop;
+    let frame = 0;
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      window.cancelAnimationFrame(frame);
+      if (active.get(row) === stop) active.delete(row);
+      restore();
+    };
+    const step = () => {
+      if (!row.isConnected || !canAnimate() || !getPreferences().messages || Date.now() < quietUntil) {
+        stop();
+        return;
+      }
+      const now = Date.now();
+      const top = rect(row).top;
+      if (moving() || chat.querySelector('[data-testid="question-form-card"]') ||
+          Math.abs(top - previousTop) > .5 || Math.abs(chat.scrollTop - previousScroll) > .5) stableSince = now;
+      previousTop = top;
+      previousScroll = chat.scrollTop;
+      if (now - stableSince >= 80 || now - started >= 1000) {
+        stop();
+        enter();
+      } else frame = window.requestAnimationFrame(step);
+    };
+    active.set(row, stop);
+    frame = window.requestAnimationFrame(step);
+  }
   function updateMessages(allow: boolean) {
     const activeChats = live(CHAT);
     const previousVisibleChats = visibleChats;
@@ -2987,6 +3214,32 @@ function installWebMotion(): () => void {
       const removedRowCount = old
         ? Array.from(old.rowIds).filter((id) => !currentRowIds.has(id)).length
         : 0;
+      const previousQuestion = chatQuestions.get(chat);
+      const questionPresent = Boolean(chat.querySelector('[data-testid="question-form-card"]'));
+      const submitUntil = previousQuestion?.contextKey === contextKey && !conversationSwitched && !contextChanged
+        ? previousQuestion.submitUntil : 0;
+      const localSubmission = now < submitUntil;
+      const questionResolutionUntil = allow && old && wasVisibleLastPass && !conversationSwitched &&
+        !contextChanged && (now >= old.hydrationQuietUntil || localSubmission) && previousQuestion?.contextKey === contextKey
+        ? (previousQuestion.present && !questionPresent ? now + 2000 : previousQuestion.resolutionUntil)
+        : 0;
+      const answerUntil = allow && old && wasVisibleLastPass && !conversationSwitched &&
+        !contextChanged && (now >= old.hydrationQuietUntil || localSubmission) && previousQuestion?.contextKey === contextKey
+        ? (previousQuestion.present && !questionPresent ? now + 15000 : previousQuestion.answerUntil)
+        : 0;
+      let localAnswerRowId = previousQuestion?.contextKey === contextKey ? previousQuestion.localAnswerRowId : null;
+      if (allow && wasVisibleLastPass && !contextChanged && !conversationSwitched && localSubmission &&
+          !questionPresent && addedRowCount <= 3 && removedRowCount <= 1 && !isChatHistorySyncing(chat)) {
+        localAnswerRowId = rows.find(row => !old?.seen.has(row.getAttribute('data-history-row-id') ?? '') && row.querySelector(USER_MESSAGE))
+          ?.getAttribute('data-history-row-id') ?? localAnswerRowId;
+      }
+      chatQuestions.set(chat, {
+        contextKey, present: questionPresent, resolutionUntil: questionResolutionUntil, answerUntil,
+        submitUntil: allow && wasVisibleLastPass ? submitUntil : 0, localAnswerRowId,
+      });
+      // An answer can arrive beside its completed question/tool row, or in
+      // the next commit. That small, known handoff is live output.
+      const questionResolution = now < questionResolutionUntil && addedRowCount <= 3 && removedRowCount <= 1;
       const hasStreamDom = Boolean(chat.querySelector('[data-testid="native-polish-streaming-assistant"]'));
       const handoffActive = Boolean(!hasStreamDom && (old?.stream || (old?.handoff && old.handoff.expires > now)));
       const prelimEnteringUserMessage = Boolean(
@@ -2995,8 +3248,8 @@ function installWebMotion(): () => void {
           !conversationSwitched &&
           !contextChanged &&
           now >= (old?.hydrationQuietUntil ?? 0) &&
-          addedRowCount === 1 &&
-          removedRowCount === 0 &&
+          (addedRowCount === 1 || (questionResolution && addedRowCount > 0)) &&
+          (removedRowCount === 0 || questionResolution) &&
           rows.some((row) => {
             const id = row.getAttribute('data-history-row-id') ?? '';
             return Boolean(id && !old?.seen.has(id) && row.querySelector(USER_MESSAGE));
@@ -3019,6 +3272,7 @@ function installWebMotion(): () => void {
         firstHistoryPopulation,
         isFirstLiveUserTurn,
         isHistorySyncing,
+        questionResolution,
         addedRowCount,
         removedRowCount,
         hasEnteringUserMessage: prelimEnteringUserMessage,
@@ -3079,7 +3333,7 @@ function installWebMotion(): () => void {
       } else if (old) {
         old.hydrationQuietUntil = hydrationQuietUntil;
         if (now < hydrationQuietUntil) {
-          cancelChatMotion(chat, rows, false);
+          cancelChatMotion(chat, rows, false, true);
         }
       }
     }
@@ -3145,14 +3399,15 @@ function installWebMotion(): () => void {
       );
       const hydrationQuietUntil = chatHydrationUntil.get(chat) ?? old?.hydrationQuietUntil ?? 0;
       const suppressHydrationMotion = Date.now() < hydrationQuietUntil;
-      if (suppressHydrationMotion) candidates.clear();
+      const localQuestion = chatQuestions.get(chat);
+      const localAnswerRowId = localQuestion && Date.now() < localQuestion.submitUntil ? localQuestion.localAnswerRowId : null;
+      if (suppressHydrationMotion) for (const id of candidates) if (id !== localAnswerRowId) candidates.delete(id);
       const liveTurn = running || Boolean(old?.running);
       const hasEnteringUserMessage = Boolean(
         (old || isFirstLiveUserTurn) &&
-          !suppressHydrationMotion &&
           rows.some((row) => {
             const id = row.getAttribute('data-history-row-id') ?? '';
-            return Boolean(id && !seen.has(id) && row.querySelector(USER_MESSAGE));
+            return Boolean(id && !seen.has(id) && row.querySelector(USER_MESSAGE) && (!suppressHydrationMotion || id === localAnswerRowId));
           }),
       );
       if (hasEnteringUserMessage) {
@@ -3250,6 +3505,13 @@ function installWebMotion(): () => void {
         const id = row.getAttribute('data-history-row-id')!;
         const isNew = !seen.has(id);
         const isUserMessage = Boolean(row.querySelector(USER_MESSAGE));
+        const suppressRowHydrationMotion = suppressHydrationMotion && id !== localAnswerRowId;
+        if (id && isNew && allow && (old || isFirstLiveUserTurn) && !suppressHydrationMotion && (running || isUserMessage)) {
+          let recent = chatImageRecentRows.get(chat);
+          if (!recent) { recent = new Map(); chatImageRecentRows.set(chat, recent); }
+          recent.set(id, Date.now() + 10000);
+          while (recent.size > 1000) recent.delete(recent.keys().next().value!);
+        }
         seen.add(id);
         if (row === handoffRow) candidates.delete(id);
         else if (shouldQueueMessageEntrance({
@@ -3257,7 +3519,7 @@ function installWebMotion(): () => void {
           wasRunning: Boolean(old?.running),
           running,
           isUserMessage,
-          suppressHydrationMotion,
+          suppressHydrationMotion: suppressRowHydrationMotion,
           isNew,
           allow,
           atBottom,
@@ -3267,7 +3529,7 @@ function installWebMotion(): () => void {
           candidates.delete(id);
           const ownsTextFade = Boolean(row.querySelector('[data-testid="native-polish-streaming-assistant"]'));
           const ownsCompactionEntry = Array.from(enteringCompactions).some((item) => item.closest(HISTORY_ROW) === row);
-          if (!suppressHydrationMotion && !ownsTextFade && !ownsCompactionEntry && allow && getPreferences().messages && atBottom && Date.now() >= quietUntil && entered++ < 12) {
+          if (!suppressRowHydrationMotion && !ownsTextFade && !ownsCompactionEntry && allow && getPreferences().messages && atBottom && Date.now() >= quietUntil && entered++ < 12) {
             pendingRowEntrances.push({ row, isUserMessage });
           }
         }
@@ -3445,9 +3707,10 @@ function installWebMotion(): () => void {
           isUserMessage,
           footerSlideDownPx,
         });
-        const motion = messageEntranceMotion(isUserMessage);
-        const restore = motion.styles ? temporaryStyles(row, motion.styles) : undefined;
-        animate(row, motion.keyframes, restore, delayMs, 320);
+        const question = chatQuestions.get(chat);
+        const followsQuestion = Boolean(isUserMessage && question && Date.now() < question.answerUntil);
+        if (followsQuestion && question) question.answerUntil = 0;
+        enterMessage(row, chat, isUserMessage, delayMs, followsQuestion, timelineRise, footerRise);
       }
       if (allow && getPreferences().states && old && old.running !== running && atBottom && !suppressHandoffMotion && !suppressHydrationMotion) {
         // A disappearing indicator has no incoming element to animate. Do not
@@ -3475,6 +3738,8 @@ function installWebMotion(): () => void {
       const textSignature = chatTextSignatures.get(chat) ?? chatTextSignature(chat, rows);
       chats.set(chat, { contextKey, rowIds: currentIds, seen, seenUserMessages, seenCompactions, seenWorkedFooters, pending: candidates, running, completedFooterPendingUntil, scrollTop: currentScrollTop, compensatedScrollTop, pendingBottomUntil, userScrolledUp, maxScrollTop, scrollHeight: currentScrollHeight, clientHeight: currentClientHeight, clientWidth: currentClientWidth, footer, footerTop, stream, handoff, handoffQuietUntil, hydrationQuietUntil, reflowQuietUntil, textSignature });
     }
+    syncChatImages(activeChats, allow);
+    syncChatPrompts(activeChats, allow);
   }
   // ChatOutlineRail mounts `[data-testid="chat-outline-rail"]` inside its
   // `panelMeasure` overlay (`position: absolute; inset: 0`) when the chat has
@@ -3918,7 +4183,7 @@ function installWebMotion(): () => void {
         deadline = window.setTimeout(clearCapture, 900);
       }
       if (structural || record.attributeName === 'aria-expanded' || target.matches(PANE) || target.querySelector(PANE)) schedule();
-      const meaningful = structural || record.type === 'characterData' || ['aria-expanded', 'aria-selected', 'aria-busy', 'aria-hidden'].includes(record.attributeName ?? '');
+      const meaningful = structural || record.type === 'characterData' || ['aria-expanded', 'aria-selected', 'aria-busy', 'aria-hidden', 'src', 'srcset'].includes(record.attributeName ?? '');
       const chatVisibilityChanged =
         (record.attributeName === 'style' || record.attributeName === 'class' || record.attributeName === 'aria-hidden') &&
         Boolean(target.matches(CHAT) || target.querySelector(CHAT));
@@ -3969,7 +4234,7 @@ function installWebMotion(): () => void {
       refreshAmbient(canAnimate(), new Set<Region>(['tools', 'messages']));
     }
   });
-  observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['style', 'class', 'role', 'aria-hidden', 'aria-expanded', 'aria-selected', 'aria-busy', 'data-status-bucket'] });
+  observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['style', 'class', 'role', 'aria-hidden', 'aria-expanded', 'aria-selected', 'aria-busy', 'data-status-bucket', 'src', 'srcset'] });
   function clearCapture() {
     pending = null; treeTarget = null; pointerOrigin = null; layoutPolling = 0;
     window.clearTimeout(deadline); deadline = 0;
@@ -4007,7 +4272,24 @@ function installWebMotion(): () => void {
     window.clearTimeout(deadline);
     deadline = window.setTimeout(clearCapture, 900);
   };
+  function noteQuestionSubmission(event: Event) {
+    if (!canAnimate() || composing || event.isComposing || event.keyCode === 229 || event.repeat || (event.button ?? 0) !== 0) return;
+    if (event.key && event.key !== 'Enter' && event.key !== ' ') return;
+    const target = elementOf(event.target);
+    const card = target?.closest('[data-testid="question-form-card"]');
+    if (!target || !card || (!target.closest('[data-testid="question-form-primary-action"]') &&
+        !(event.key === 'Enter' && target.closest('input,textarea,[role="textbox"]')))) return;
+    const chat = card.closest(CHAT);
+    if (!chat) return;
+    const contextKey = chatContextKey(chat);
+    const previous = chatQuestions.get(chat);
+    chatQuestions.set(chat, {
+      contextKey, present: true, resolutionUntil: previous?.contextKey === contextKey ? previous.resolutionUntil : 0,
+      answerUntil: 0, submitUntil: Date.now() + 15000, localAnswerRowId: null,
+    });
+  }
   const begin = (event: Event) => {
+    noteQuestionSubmission(event);
     if (event.key === 'Meta' || event.key === 'Control') { prime(event); return; }
     if (!capturesInput(event)) {
       // Selecting text or placing a caret may interrupt motion, but does not
@@ -4107,6 +4389,7 @@ function installWebMotion(): () => void {
   // click arrives. Measuring in click capture sees the final layout already.
   // Pointerdown establishes the old layout; click is only an AX fallback.
   const onCommit: Listener = (event) => {
+    noteQuestionSubmission(event);
     pointerOrigin = null;
     if (!capturesInput(event)) return;
     if (Date.now() < quietUntil) { refreshAmbient(false); return; }
@@ -4130,6 +4413,7 @@ function installWebMotion(): () => void {
     window.cancelAnimationFrame(diffFrame); diffFrame = 0; diffTail = false;
     window.cancelAnimationFrame(titleFrame); titleFrame = 0; titleLastTime = 0;
     window.cancelAnimationFrame(revealFrame); revealFrame = 0;
+    clearImagePlaceholders();
     // Exit copies are unnecessary while no motion is presented. Release
     // their detached DOM and rebuild clean baselines on return.
     workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); paneTransition = null;
@@ -4210,6 +4494,7 @@ function installWebMotion(): () => void {
     document.body.removeAttribute("data-native-polish");
     for (const key of ['controls', 'tabs', 'trees', 'states', 'timeline', 'motion']) document.body.removeAttribute(`data-native-polish-${key}`);
     stylesheet.remove();
+    clearImagePlaceholders();
     for (const cleanup of decorations.values()) cleanup();
     decorations.clear();
     clearLegacyPrecondense();

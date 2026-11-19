@@ -309,6 +309,7 @@ export interface ResolveChatHydrationQuietUntilInput {
   firstHistoryPopulation: boolean;
   isFirstLiveUserTurn: boolean;
   isHistorySyncing?: boolean;
+  questionResolution?: boolean;
   addedRowCount?: number;
   removedRowCount?: number;
   hasEnteringUserMessage?: boolean;
@@ -348,6 +349,7 @@ export function resolveChatHydrationQuietUntil(
     : 0;
 
   const isBulkHistoryRehydration =
+    !input.questionResolution &&
     !input.hasEnteringUserMessage &&
     !input.handoffSwapCommit &&
     (addedRowCount >= 2 || (addedRowCount >= 1 && removedRowCount >= 1));
@@ -386,6 +388,7 @@ export function resolveChatHydrationQuietUntil(
   }
 
   const isUnexpectedIdleHistorySync =
+    !input.questionResolution &&
     (addedRowCount > 0 || removedRowCount > 0) &&
     !input.isFirstLiveUserTurn &&
     !input.liveTurn &&

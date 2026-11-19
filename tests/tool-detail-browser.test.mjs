@@ -134,7 +134,11 @@ try {
       if (this.hasAttribute('data-summary')) window.summaryAnimations.push(this.getAttribute('data-summary'));
       if (this.hasAttribute('data-row-entry')) window.summaryAnimations.push('row');
       if (this.hasAttribute('data-label') || this.getAttribute('data-native-polish-shimmer-text') === 'primary') {
-        window.labelAnimations.push({ target: this.hasAttribute('data-label') ? 'label' : 'shimmer', duration: options.duration });
+        window.labelAnimations.push({
+          target: this.hasAttribute('data-label') ? 'label' : 'shimmer',
+          duration: options.duration,
+          path: frames.map(frame => frame.transform),
+        });
       }
       return originalAnimate.call(this, frames, options);
     };
@@ -187,94 +191,109 @@ try {
   });
   assert.deepEqual(summary.entered, ['live'], 'only the new live summary eases in');
   assert.deepEqual(summary.remounted, ['live'], 'a remounted summary does not replay its entrance');
-  assert.deepEqual(summary.labelUpdates, [{ target: 'label', duration: 240 }, { target: 'shimmer', duration: 240 }], 'summary text and shimmer update together');
+  assert.deepEqual(summary.labelUpdates, [
+    { target: 'label', duration: 320, path: ['translateY(6px)', 'translateY(0)'] },
+    { target: 'shimmer', duration: 320, path: ['translateY(6px)', 'translateY(0)'] },
+  ], 'summary text and shimmer rise together at the slower pace');
   assert.deepEqual(summary.afterDisabled, ['live'], 'disabled timeline motion does not replay when re-enabled');
   assert.deepEqual(summary.withRowEntrance, ['live', 'row'], 'the row entrance owns motion when both arrive together');
   await summaryPage.close();
 
-  const disclosurePage = await browser.newPage();
-  await disclosurePage.setContent(`
-    <style id="unistyles-web">.unistyles_abc123 { color: rgb(1, 2, 3); }</style>
-    <div data-testid="agent-chat-scroll" style="height:400px;overflow:auto">
-      <div data-history-row-id="group">
-        <div data-testid="tool-call-group" id="group">
-          <div role="button" aria-expanded="false" id="toggle"><div><span>Icon</span><div><span>Ran 1 command</span></div></div></div>
+  for (const { wrappedHeader, badge, nested, omitAria, displayContents } of [
+    { wrappedHeader: false, badge: false, nested: false },
+    { wrappedHeader: true, badge: false, nested: false },
+    { wrappedHeader: false, badge: true, nested: false },
+    { wrappedHeader: true, badge: true, nested: false },
+    { wrappedHeader: true, badge: true, nested: true },
+    { wrappedHeader: true, badge: false, nested: false, omitAria: true },
+    { wrappedHeader: true, badge: false, nested: false, omitAria: true, displayContents: true },
+  ]) {
+    const disclosurePage = await browser.newPage();
+    await disclosurePage.setContent(`
+      <style id="unistyles-web">.unistyles_abc123 { color: rgb(1, 2, 3); }</style>
+      <div data-testid="agent-chat-scroll" style="height:400px;overflow:auto">
+        <div data-history-row-id="group">
+          ${nested ? '<div data-testid="tool-call-group"><div role="button" aria-expanded="true">Expanded group</div><div>' : ''}
+          <div data-testid="${badge ? 'tool-call-badge' : 'tool-call-group'}" id="group">
+            ${wrappedHeader ? '<div id="header">' : ''}${displayContents ? '<div style="display:contents">' : ''}<div role="button" ${omitAria ? '' : 'aria-expanded="false"'} id="toggle"><div><span>Icon</span><div><span>${badge ? 'Thinking' : 'Ran 1 command'}</span></div></div></div>${displayContents ? '</div>' : ''}${wrappedHeader ? '<button data-testid="tool-call-open-file">Open file</button></div>' : ''}
+          </div>
+          ${nested ? '</div></div>' : ''}
         </div>
       </div>
-    </div>
-  `);
-  await disclosurePage.addScriptTag({ type: 'module', content: `
-    import { defaults, setPreferences } from '${preferences}';
-    import { installMotion } from '${adapter}';
-    setPreferences({ ...defaults, edgePeek: false, elasticScroll: false });
-    window.disclosureAnimations = [];
-    const originalAnimate = Element.prototype.animate;
-    Element.prototype.animate = function(frames, options) {
-      if (this.id === 'group') window.disclosureAnimations.push(frames.map(frame => frame.height));
-      return originalAnimate.call(this, frames, options);
-    };
-    const group = document.getElementById('group');
-    const toggle = document.getElementById('toggle');
-    toggle.addEventListener('click', () => {
-      const expanded = toggle.getAttribute('aria-expanded') === 'true';
-      toggle.setAttribute('aria-expanded', String(!expanded));
-      if (expanded) {
-        group.lastElementChild.remove();
-        document.getElementById('unistyles-web').textContent = '';
-      }
-      else {
-        const details = document.createElement('div');
-        details.innerHTML = '<input value="excluded"><div class="scroller" style="height:60px;overflow:auto"><div class="unistyles_abc123" style="height:200px">Tool details</div></div>';
-        details.style.height = '100px';
-        group.appendChild(details);
-      }
+    `);
+    await disclosurePage.addScriptTag({ type: 'module', content: `
+      import { defaults, setPreferences } from '${preferences}';
+      import { installMotion } from '${adapter}';
+      setPreferences({ ...defaults, edgePeek: false, elasticScroll: false });
+      window.disclosureAnimations = [];
+      const originalAnimate = Element.prototype.animate;
+      Element.prototype.animate = function(frames, options) {
+        if (this.id === 'group') window.disclosureAnimations.push(frames.map(frame => frame.height));
+        return originalAnimate.call(this, frames, options);
+      };
+      const group = document.getElementById('group');
+      const toggle = document.getElementById('toggle');
+      toggle.addEventListener('click', () => {
+        const expanded = group.children.length > 1;
+        if (toggle.hasAttribute('aria-expanded')) toggle.setAttribute('aria-expanded', String(!expanded));
+        if (expanded) {
+          group.lastElementChild.remove();
+          document.getElementById('unistyles-web').textContent = '';
+        }
+        else {
+          const details = document.createElement('div');
+          details.innerHTML = '<input value="excluded"><div class="scroller" style="height:60px;overflow:auto"><div class="unistyles_abc123" style="height:200px">Tool details</div></div>';
+          details.style.height = '100px';
+          group.appendChild(details);
+        }
+      });
+      window.disposeMotion = installMotion();
+    ` });
+    await disclosurePage.waitForFunction(() => typeof window.disposeMotion === 'function');
+    await disclosurePage.waitForFunction(() => !document.querySelector('[data-testid="agent-chat-scroll"]').hasAttribute('data-native-polish-hydrating'));
+    const disclosure = await disclosurePage.evaluate(async () => {
+      const toggle = document.getElementById('toggle');
+      const click = () => {
+        toggle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        toggle.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+        toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      };
+      const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+      click();
+      await frame(); await frame();
+      await new Promise(resolve => setTimeout(resolve, 300));
+      document.querySelector('#group .scroller').scrollTop = 90;
+      click();
+      await frame(); await frame();
+      const animations = [...window.disclosureAnimations];
+      const copy = document.querySelector('#group > [data-native-polish-ghost]');
+      const hasInertCopy = Boolean(copy?.hasAttribute('inert') && copy.getAttribute('aria-hidden') === 'true');
+      const scrollTop = copy?.querySelector('.scroller')?.scrollTop;
+      const color = copy ? getComputedStyle(copy.querySelector('.unistyles_abc123')).color : null;
+      const stripped = Boolean(copy && !copy.querySelector('input, [id], [data-testid]'));
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const cleaned = !document.querySelector('#group > [data-native-polish-ghost]') && !document.querySelector('[data-native-polish-style="exit"]');
+      click();
+      await new Promise(resolve => setTimeout(resolve, 300));
+      click();
+      await frame(); await frame();
+      click();
+      await frame(); await frame();
+      const reopenedCleanly = !document.querySelector('#group > [data-native-polish-ghost]') && document.getElementById('group').children.length > 1;
+      window.disposeMotion();
+      return { animations, hasInertCopy, scrollTop, color, stripped, cleaned, reopenedCleanly };
     });
-    window.disposeMotion = installMotion();
-  ` });
-  await disclosurePage.waitForFunction(() => typeof window.disposeMotion === 'function');
-  await disclosurePage.waitForFunction(() => !document.querySelector('[data-testid="agent-chat-scroll"]').hasAttribute('data-native-polish-hydrating'));
-  const disclosure = await disclosurePage.evaluate(async () => {
-    const toggle = document.getElementById('toggle');
-    const click = () => {
-      toggle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-      toggle.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
-      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    };
-    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
-    click();
-    await frame(); await frame();
-    await new Promise(resolve => setTimeout(resolve, 300));
-    document.querySelector('#group .scroller').scrollTop = 90;
-    click();
-    await frame(); await frame();
-    const animations = [...window.disclosureAnimations];
-    const copy = document.querySelector('#group > [data-native-polish-ghost]');
-    const hasInertCopy = Boolean(copy?.hasAttribute('inert') && copy.getAttribute('aria-hidden') === 'true');
-    const scrollTop = copy?.querySelector('.scroller')?.scrollTop;
-    const color = copy ? getComputedStyle(copy.querySelector('.unistyles_abc123')).color : null;
-    const stripped = Boolean(copy && !copy.querySelector('input, [id], [data-testid]'));
-    await new Promise(resolve => setTimeout(resolve, 300));
-    const cleaned = !document.querySelector('#group > [data-native-polish-ghost]') && !document.querySelector('[data-native-polish-style="exit"]');
-    click();
-    await new Promise(resolve => setTimeout(resolve, 300));
-    click();
-    await frame(); await frame();
-    click();
-    await frame(); await frame();
-    const reopenedCleanly = !document.querySelector('#group > [data-native-polish-ghost]') && document.getElementById('toggle').getAttribute('aria-expanded') === 'true';
-    window.disposeMotion();
-    return { animations, hasInertCopy, scrollTop, color, stripped, cleaned, reopenedCleanly };
-  });
-  assert.equal(disclosure.animations.length, 2, `opening and closing should animate: ${JSON.stringify(disclosure)}`);
-  assert.ok(parseFloat(disclosure.animations[0][0]) < parseFloat(disclosure.animations[0][1]));
-  assert.ok(parseFloat(disclosure.animations[1][0]) > parseFloat(disclosure.animations[1][1]));
-  assert.ok(disclosure.hasInertCopy, 'closing keeps inert details within the collapsing group');
-  assert.equal(disclosure.scrollTop, 90, 'the closing copy retains nested scroll position');
-  assert.equal(disclosure.color, 'rgb(1, 2, 3)', 'the closing copy keeps styles removed by the host');
-  assert.ok(disclosure.stripped, 'the closing copy has no interactive inputs or duplicate identifiers');
-  assert.ok(disclosure.cleaned, 'the copy and restored styles are removed after collapse');
-  assert.ok(disclosure.reopenedCleanly, 'reopening cancels the closing copy');
-  await disclosurePage.close();
+    assert.equal(disclosure.animations.length, 2, `opening and closing should animate: ${JSON.stringify(disclosure)}`);
+    assert.ok(parseFloat(disclosure.animations[0][0]) < parseFloat(disclosure.animations[0][1]));
+    assert.ok(parseFloat(disclosure.animations[1][0]) > parseFloat(disclosure.animations[1][1]));
+    assert.ok(disclosure.hasInertCopy, 'closing keeps inert details within the collapsing group');
+    assert.equal(disclosure.scrollTop, 90, 'the closing copy retains nested scroll position');
+    assert.equal(disclosure.color, 'rgb(1, 2, 3)', 'the closing copy keeps styles removed by the host');
+    assert.ok(disclosure.stripped, 'the closing copy has no interactive inputs or duplicate identifiers');
+    assert.ok(disclosure.cleaned, 'the copy and restored styles are removed after collapse');
+    assert.ok(disclosure.reopenedCleanly, 'reopening cancels the closing copy');
+    await disclosurePage.close();
+  }
 
   const messagePage = await browser.newPage();
   await messagePage.setContent(`
@@ -311,20 +330,35 @@ try {
   await messagePage.close();
 
   const revealPage = await browser.newPage();
-  await revealPage.setContent('<div data-testid="native-polish-streaming-assistant" id="stream">Alpha</div>');
+  await revealPage.setContent(`
+    <div data-testid="native-polish-streaming-assistant" id="stream">Alpha</div>
+    <div data-testid="tool-call-badge">
+      <div><span style="--paseo-shimmer:1">Thinking</span></div>
+      <div id="thinking"><div id="thought">First thought</div></div>
+    </div>
+  `);
   await revealPage.addScriptTag({ type: 'module', content: `
-    import { defaults, setPreferences } from '${preferences}';
+    import { defaults, getPreferences, setPreferences } from '${preferences}';
     import { installMotion } from '${adapter}';
     setPreferences({ ...defaults, edgePeek: false, elasticScroll: false });
     window.disposeMotion = installMotion();
+    window.setPace = pace => setPreferences({ ...getPreferences(), pace });
   ` });
   await revealPage.waitForFunction(() => typeof window.disposeMotion === 'function');
   const reveal = await revealPage.evaluate(async () => {
     const host = document.getElementById('stream');
+    const thinking = document.getElementById('thinking');
+    const thought = document.getElementById('thought');
     const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
-    const roots = () => Array.from(host.querySelectorAll(':scope > [data-native-polish-ghost]'));
+    const roots = (surface = host) => Array.from(surface.querySelectorAll(':scope > [data-native-polish-ghost]'));
+    const timings = surface => {
+      const [blur, tint] = roots(surface)[0].children;
+      return [blur.firstElementChild, tint].map(el => el.getAnimations()[0].effect.getTiming().duration);
+    };
     host.append(' bravo');
+    thought.append(' continues');
     for (let i = 0; i < 10 && roots().length < 1; i++) await frame();
+    const gentle = [timings(host), timings(thinking)];
     host.append(' charlie');
     for (let i = 0; i < 10 && roots().length < 2; i++) await frame();
     const overlays = roots();
@@ -346,14 +380,19 @@ try {
     await Promise.resolve();
     const hostPosition = host.style.position;
     host.style.position = '';
+    window.setPace('quick');
     host.append(' foxtrot');
+    thought.append(' on Quick');
     for (let i = 0; i < 10 && roots().length < 1; i++) await frame();
+    const quick = [timings(host), timings(thinking)];
     host.append(' golf');
     for (let i = 0; i < 10 && roots().length < 2; i++) await frame();
     if (roots().length !== 2) throw new Error('Expected two reveals before disposal');
     window.disposeMotion();
-    return { firstFinished, lastFinished, hostPosition, disposedPosition: getComputedStyle(host).position, disposedRoots: roots().length };
+    return { gentle, quick, firstFinished, lastFinished, hostPosition, disposedPosition: getComputedStyle(host).position, disposedRoots: roots().length };
   });
+  assert.deepEqual(reveal.gentle, [[400, 400], [400, 400]], 'Gentle uses 400 ms for both layers in assistant and Thinking text');
+  assert.deepEqual(reveal.quick, [[200, 200], [200, 200]], 'switching to Quick uses 200 ms for both layers on the next text update');
   assert.deepEqual(reveal.firstFinished, { position: 'relative', remaining: 1 });
   assert.deepEqual(reveal.lastFinished, { position: 'static', remaining: 0 });
   assert.equal(reveal.hostPosition, 'absolute', 'release preserves a host position change');

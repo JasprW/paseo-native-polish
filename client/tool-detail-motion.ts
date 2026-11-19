@@ -1,6 +1,11 @@
+import type { Preferences } from "./preferences";
+
 export type ToolDetailTextFrame = Record<string, string | number>;
 
-export const TOOL_DETAIL_TEXT_FADE_DURATION_MS = 400;
+const STREAMING_TEXT_FADE_DURATION_MS: Record<Preferences["pace"], number> = {
+  gentle: 400,
+  quick: 200,
+};
 export const TOOL_DETAIL_TEXT_BLUR_PX = 2;
 
 export interface ToolDetailTextTransition {
@@ -75,14 +80,18 @@ export function toolDetailShimmerStyle(input: {
 }
 
 export const TOOL_LABEL_UPDATE_DURATION_MS = 150;
-export const TOOL_LABEL_TEXT_UPDATE_DURATION_MS = 240;
+export const TOOL_LABEL_TEXT_UPDATE_DURATION_MS = 320;
 export const TOOL_LABEL_UPDATE_FRAMES: ToolDetailTextFrame[] = [
   { opacity: 0, transform: "translateY(4px)" },
   { opacity: 1, transform: "translateY(0)" },
 ];
 export const TOOL_LABEL_SHIMMER_UPDATE_FRAMES: ToolDetailTextFrame[] = [
-  { transform: "translateY(4px)" },
+  { transform: "translateY(6px)" },
   { transform: "translateY(0)" },
+];
+export const TOOL_LABEL_TEXT_UPDATE_FRAMES: ToolDetailTextFrame[] = [
+  { ...TOOL_LABEL_SHIMMER_UPDATE_FRAMES[0], opacity: 0 },
+  { ...TOOL_LABEL_SHIMMER_UPDATE_FRAMES[1], opacity: 1 },
 ];
 
 export interface ToolLabelState {
@@ -109,7 +118,7 @@ export function toolLabelUpdateTransition(
   return {
     animatePrimary,
     animateSecondary,
-    frames: TOOL_LABEL_UPDATE_FRAMES,
+    frames: TOOL_LABEL_TEXT_UPDATE_FRAMES,
     shimmerFrames: TOOL_LABEL_SHIMMER_UPDATE_FRAMES,
     durationMs: TOOL_LABEL_TEXT_UPDATE_DURATION_MS,
   };
@@ -390,7 +399,11 @@ export function finalizeStreamingMarkdown(text: string): string {
   return result;
 }
 
-export function toolDetailTextTransition(previous: string | undefined, current: string): ToolDetailTextTransition | null {
+export function toolDetailTextTransition(
+  previous: string | undefined,
+  current: string,
+  pace: Preferences["pace"] = "gentle",
+): ToolDetailTextTransition | null {
   if (previous === undefined || !current || previous === current) return null;
   let stablePrefix = previous;
   if (!current.startsWith(stablePrefix)) {
@@ -408,7 +421,7 @@ export function toolDetailTextTransition(previous: string | undefined, current: 
     enteringText: current.slice(stablePrefix.length),
     enteringStart: stablePrefix.length,
     enteringEnd: current.length,
-    durationMs: TOOL_DETAIL_TEXT_FADE_DURATION_MS,
+    durationMs: STREAMING_TEXT_FADE_DURATION_MS[pace],
     // A background-coloured cover fades away from only the appended glyph
     // range while a paired backdrop-blur layer softens the newly revealed
     // glyphs underneath. The live text remains a single paint owner, avoiding

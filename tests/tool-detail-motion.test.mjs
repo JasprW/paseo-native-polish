@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   TOOL_DETAIL_TEXT_BLUR_PX,
-  TOOL_DETAIL_TEXT_FADE_DURATION_MS,
   TOOL_LABEL_SHIMMER_UPDATE_FRAMES,
   TOOL_LABEL_TEXT_UPDATE_DURATION_MS,
-  TOOL_LABEL_UPDATE_FRAMES,
+  TOOL_LABEL_TEXT_UPDATE_FRAMES,
   TOOL_SHIMMER_DURATION_MS,
   TOOL_SHIMMER_PEAK_WIDTH_PX,
   TOOL_SHIMMER_TRACK_END_PX,
@@ -28,7 +27,7 @@ test("Thinking keeps its existing text stable while the appended suffix fades an
     enteringText: " the request",
     enteringStart: "Considering".length,
     enteringEnd: "Considering the request".length,
-    durationMs: TOOL_DETAIL_TEXT_FADE_DURATION_MS,
+    durationMs: 400,
     cover: [
       { opacity: 1, filter: `blur(${TOOL_DETAIL_TEXT_BLUR_PX}px)` },
       { opacity: 0, filter: "blur(0px)" },
@@ -47,7 +46,7 @@ test("Thinking animates the first chunk when transitioning from an empty loading
     enteringText: "Considering",
     enteringStart: 0,
     enteringEnd: "Considering".length,
-    durationMs: TOOL_DETAIL_TEXT_FADE_DURATION_MS,
+    durationMs: 400,
     cover: [
       { opacity: 1, filter: `blur(${TOOL_DETAIL_TEXT_BLUR_PX}px)` },
       { opacity: 0, filter: "blur(0px)" },
@@ -206,7 +205,7 @@ test("Tool labels and summaries fade up from the bottom when their text changes"
     {
       animatePrimary: true,
       animateSecondary: false,
-      frames: TOOL_LABEL_UPDATE_FRAMES,
+      frames: TOOL_LABEL_TEXT_UPDATE_FRAMES,
       shimmerFrames: TOOL_LABEL_SHIMMER_UPDATE_FRAMES,
       durationMs: TOOL_LABEL_TEXT_UPDATE_DURATION_MS,
     },
@@ -221,14 +220,14 @@ test("Tool labels and summaries fade up from the bottom when their text changes"
       animatePrimary: false,
       animateSecondary: true,
       frames: [
-        { opacity: 0, transform: "translateY(4px)" },
+        { opacity: 0, transform: "translateY(6px)" },
         { opacity: 1, transform: "translateY(0)" },
       ],
       shimmerFrames: [
-        { transform: "translateY(4px)" },
+        { transform: "translateY(6px)" },
         { transform: "translateY(0)" },
       ],
-      durationMs: 240,
+      durationMs: 320,
     },
   );
 });

@@ -6,12 +6,18 @@
 
 ## 0.4.22 · 2026-11-17
 
+- Ease newly arriving chat images into view and show a skeleton while they load when Paseo has no spinner.
+- Restore tool expand/collapse motion for newer chat headers that wrap the disclosure button beside Open file, including controls without an expanded-state attribute.
+- Ease approval prompts and AskQuestion cards into view when New messages motion is enabled. Give submitted question answers the same entrance as regular messages, even when their completed tool arrives alongside them, and wait for the question-removal scroll motion to settle before revealing the answer.
+- Animate explicitly submitted question answers even when the conversation is still restoring its history, without replaying restored messages.
+- Keep Thinking text clipped during successive height updates to prevent flicker while it streams.
 - Keep long user messages readable while Paseo's expansion control is unavailable.
 - Keep overlapping streamed-text reveals aligned until the last reveal finishes.
 - Stop follow-output motion when scrolling upward so the conversation stays still during manual scrolling.
 - Ease new live tool summaries into view, while leaving loaded history and remounted summaries still.
 - Keep tool details visible inside their collapsing group when closed, including their scrolled position and styles.
-- Slow tool summary text changes to 240 ms so the transition is easier to follow.
+- Use 400 ms for streamed assistant and Thinking text fades on Gentle and 200 ms on Quick.
+- Ease updated tool summary text upward over 320 ms so consecutive summaries are easier to follow.
 - Keep numeric link labels hidden until their destinations arrive so streamed text does not flash and retract.
 - Stop tool detail height animations at the updated content height when a target changes, avoiding overshoot and snapping.
 - Release finished conversation motion controllers so closed conversations do not remain in memory.
