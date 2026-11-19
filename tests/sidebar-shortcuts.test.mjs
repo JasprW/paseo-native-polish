@@ -305,7 +305,13 @@ flushFrames();
 assert.equal(body.querySelector("[data-native-polish-reveal]"), null, "cancelling a rename keeps the original title");
 openRename();
 finishRename("Renamed workspace");
-assert.equal(modern.title.style.getPropertyValue("visibility"), "hidden", "a saved title reveals before its first paint");
+assert.equal(modern.title.style.getPropertyValue("visibility"), "", "an inline save shows the new title immediately");
+flushFrames();
+assert.equal(Boolean(body.querySelector("[data-native-polish-reveal]")), false, "an inline save does not start a deferred reveal");
+
+modern.title.textContent = "Updated branch name";
+observer([{ type: "characterData", target: { nodeType: 3, parentElement: modern.title } }]);
+assert.equal(modern.title.style.getPropertyValue("visibility"), "hidden", "a title change outside inline editing reveals before its first paint");
 assert.equal(trailing.style.getPropertyValue("visibility"), "", "trailing metadata remains visible");
 
 legacy.title.textContent = "Renamed legacy workspace";

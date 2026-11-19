@@ -2,7 +2,7 @@
 
 ## 0.4.23 · 2026-11-19
 
-- Restore the sidebar title reveal after saving a workspace rename on newer Paseo builds. The new title appears letter by letter once the inline editor closes.
+- Restore the sidebar title reveal for workspace names that change outside the inline rename editor, such as when the displayed branch name changes. Saving an inline rename shows the new title immediately.
 
 ## 0.4.22 · 2026-11-17
 

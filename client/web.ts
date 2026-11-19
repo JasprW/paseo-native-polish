@@ -183,9 +183,9 @@ function tabSlot(tab: Element, scroll: Element): Element {
 }
 const chevron = (svg: Element) => Array.from(svg.querySelectorAll('path')).some(path => /^m9\s*18\s*6-6-6-6$/i.test(path.getAttribute('d') ?? ''));
 function workspaceTitleNode(row: Element): Element | null {
+  if (row.querySelector(WORKSPACE_TITLE_INPUT)) return null;
   const title = row.querySelector(WORKSPACE_TITLE);
   if (title) return title;
-  if (row.querySelector(WORKSPACE_TITLE_INPUT)) return null;
   // Older Paseo builds render the title as the first untagged text leaf,
   // before the metadata and outside tagged badges and controls.
   const tagged = (el: Element) => {
@@ -1300,9 +1300,17 @@ function installWebMotion(): () => void {
   // one frame. Installing the cover here, in the same microtask as the host
   // mutation, keeps the final name from flashing before our reveal starts.
   function syncTitleReveal(row: Element) {
-    if (!canAnimate() || !getPreferences().sidebars || Date.now() < quietUntil) return;
     const key = row.getAttribute('data-testid');
-    if (!key || titleRevealKeys.has(key)) return;
+    if (!key) return;
+    if (row.querySelector(WORKSPACE_TITLE_INPUT)) {
+      // The editor temporarily owns the title slot. Drop the baseline before
+      // the title returns so closing the editor never triggers a reveal.
+      const activeNode = titleRevealKeys.get(key);
+      if (activeNode) titleReveals.get(activeNode)?.stop();
+      workspaceTitleBaseline.delete(key);
+      return;
+    }
+    if (!canAnimate() || !getPreferences().sidebars || Date.now() < quietUntil || titleRevealKeys.has(key)) return;
     const node = workspaceTitleNode(row);
     if (!node || !visible(node)) return;
     const text = node.textContent ?? '';
@@ -1336,13 +1344,7 @@ function installWebMotion(): () => void {
         const key = row.getAttribute('data-testid');
         if (!key) continue;
         const node = workspaceTitleNode(row);
-        const previous = workspaceTitleBaseline.get(key);
-        if (!node) {
-          // Inline rename replaces the title with an input until the save
-          // settles. Keep the last committed title across those frames.
-          if (previous !== undefined && row.querySelector(WORKSPACE_TITLE_INPUT)) nextBaseline.set(key, previous);
-          continue;
-        }
+        if (!node) continue;
         // A row whose title is already revealing must not be re-scanned: its
         // source leaf can be replaced while the temporary overlay finishes.
         const activeNode = titleRevealKeys.get(key);
@@ -1353,6 +1355,7 @@ function installWebMotion(): () => void {
         }
         const text = node.textContent ?? '';
         nextBaseline.set(key, text);
+        const previous = workspaceTitleBaseline.get(key);
         // A renamed title is a replacement, not growth of the same string: always
         // retype from the first character rather than diffing against the old one.
         if (previous === undefined || previous === text || !allow || !getPreferences().sidebars || Date.now() < quietUntil) continue;
