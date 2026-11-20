@@ -105,6 +105,8 @@ function metaItemKey(el: Element): string {
   return 'pr';
 }
 const TITLE_EXCLUDED = '[role="button"],[role="menuitem"],svg';
+const WORKSPACE_TITLE = '[data-testid^="sidebar-workspace-title-"]';
+const WORKSPACE_TITLE_INPUT = '[data-testid^="sidebar-workspace-rename-input-"]';
 const TITLE_REVEAL_HORIZON_MS = 150;
 const PREF_KEY = 'paseo-native-polish:preferences:v1';
 const EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
@@ -180,10 +182,12 @@ function tabSlot(tab: Element, scroll: Element): Element {
   return slot;
 }
 const chevron = (svg: Element) => Array.from(svg.querySelectorAll('path')).some(path => /^m9\s*18\s*6-6-6-6$/i.test(path.getAttribute('d') ?? ''));
-// The rendered title has no testid of its own. It is the first leaf text node
-// in the row that is not inside a tagged badge/menu/icon, which always comes
-// before the meta row (branch, labels, checks) in document order.
 function workspaceTitleNode(row: Element): Element | null {
+  if (row.querySelector(WORKSPACE_TITLE_INPUT)) return null;
+  const title = row.querySelector(WORKSPACE_TITLE);
+  if (title) return title;
+  // Older Paseo builds render the title as the first untagged text leaf,
+  // before the metadata and outside tagged badges and controls.
   const tagged = (el: Element) => {
     for (let at: Element | null = el; at && at !== row; at = at.parentElement) if (at.getAttribute('data-testid') || at.matches(TITLE_EXCLUDED)) return true;
     return false;
@@ -380,7 +384,7 @@ function captureTree(target: Element): Tree | null {
 }
 
 // Keep in step with package.json. leaseMotion uses it to pick which bundle owns the window.
-const VERSION = '0.4.22';
+const VERSION = '0.4.23';
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
@@ -1296,9 +1300,17 @@ function installWebMotion(): () => void {
   // one frame. Installing the cover here, in the same microtask as the host
   // mutation, keeps the final name from flashing before our reveal starts.
   function syncTitleReveal(row: Element) {
-    if (!canAnimate() || !getPreferences().sidebars || Date.now() < quietUntil) return;
     const key = row.getAttribute('data-testid');
-    if (!key || titleRevealKeys.has(key)) return;
+    if (!key) return;
+    if (row.querySelector(WORKSPACE_TITLE_INPUT)) {
+      // The editor temporarily owns the title slot. Drop the baseline before
+      // the title returns so closing the editor never triggers a reveal.
+      const activeNode = titleRevealKeys.get(key);
+      if (activeNode) titleReveals.get(activeNode)?.stop();
+      workspaceTitleBaseline.delete(key);
+      return;
+    }
+    if (!canAnimate() || !getPreferences().sidebars || Date.now() < quietUntil || titleRevealKeys.has(key)) return;
     const node = workspaceTitleNode(row);
     if (!node || !visible(node)) return;
     const text = node.textContent ?? '';

@@ -32,8 +32,11 @@ class Element {
   removeAttribute(key) { this.attributes.delete(key); }
   matches(selector) {
     return selector.split(",").some(part => {
+      if (part === "*") return true;
       if (part.includes('id^="agent-list-gesture-host-"')) return this.getAttribute("id")?.startsWith("agent-list-gesture-host-");
       if (part.includes('id^="file-explorer-gesture-host-"')) return this.getAttribute("id")?.startsWith("file-explorer-gesture-host-");
+      const prefix = part.match(/^\s*\[data-testid\^="([^"]+)"\]$/);
+      if (prefix) return Boolean(this.getAttribute("data-testid")?.startsWith(prefix[1]));
       const testid = part.match(/^\s*\[data-testid="([^"]+)"\]$/);
       if (testid) return this.getAttribute("data-testid") === testid[1];
       const attribute = part.match(/^\s*\[([\w-]+)\]$/);
@@ -245,7 +248,79 @@ document.activeElement = editor;
 key("keydown", "Meta", editor);
 key("keydown", "b", editor);
 assert.equal((await applyCommit()).length, 0, "editor shortcuts do not arm a global capture");
+document.activeElement = body;
+
+function workspace(titleTestId) {
+  const row = new Element();
+  const title = new Element();
+  const key = titleTestId ? "tagged" : "legacy";
+  row.setAttribute("data-testid", "sidebar-workspace-row-" + key);
+  if (titleTestId) title.setAttribute("data-testid", titleTestId);
+  title.textContent = "Original workspace";
+  row.appendChild(title);
+  return { row, title };
+}
+
+function childCommit(target, addedNodes, removedNodes = []) {
+  observer([{ type: "childList", target, addedNodes, removedNodes }]);
+}
+
+const scroll = new Element();
+scroll.setAttribute("data-testid", "sidebar-project-workspace-list-scroll");
+const titleTestId = "sidebar-workspace-title-tagged";
+const modern = workspace(titleTestId);
+const legacy = workspace();
+const trailing = new Element();
+trailing.textContent = "1m ago";
+modern.row.appendChild(trailing);
+scroll.appendChild(modern.row);
+scroll.appendChild(legacy.row);
+body.appendChild(scroll);
+childCommit(body, [scroll]);
+flushFrames();
+assert.equal(body.querySelector("[data-native-polish-reveal]"), null, "mounting rows seeds the title baseline");
+
+const input = new Element();
+input.setAttribute("data-testid", "sidebar-workspace-rename-input-tagged");
+function openRename() {
+  modern.title.remove();
+  modern.row.insertBefore(input, trailing);
+  childCommit(modern.row, [input], [modern.title]);
+  flushFrames();
+  assert.equal(body.querySelector("[data-native-polish-reveal]"), null, "inline editing leaves the title and metadata alone");
+}
+function finishRename(text) {
+  input.remove();
+  const title = new Element();
+  title.setAttribute("data-testid", titleTestId);
+  title.textContent = text;
+  modern.title = title;
+  modern.row.insertBefore(title, trailing);
+  childCommit(modern.row, [title], [input]);
+}
+
+openRename();
+finishRename("Original workspace");
+flushFrames();
+assert.equal(body.querySelector("[data-native-polish-reveal]"), null, "cancelling a rename keeps the original title");
+openRename();
+finishRename("Renamed workspace");
+assert.equal(modern.title.style.getPropertyValue("visibility"), "", "an inline save shows the new title immediately");
+flushFrames();
+assert.equal(Boolean(body.querySelector("[data-native-polish-reveal]")), false, "an inline save does not start a deferred reveal");
+
+modern.title.textContent = "Updated branch name";
+observer([{ type: "characterData", target: { nodeType: 3, parentElement: modern.title } }]);
+assert.equal(modern.title.style.getPropertyValue("visibility"), "hidden", "a title change outside inline editing reveals before its first paint");
+assert.equal(trailing.style.getPropertyValue("visibility"), "", "trailing metadata remains visible");
+
+legacy.title.textContent = "Renamed legacy workspace";
+observer([{ type: "characterData", target: { nodeType: 3, parentElement: legacy.title } }]);
+assert.equal(legacy.title.style.getPropertyValue("visibility"), "hidden", "legacy workspace titles still reveal");
+
 dispose();
+assert.equal(body.querySelector("[data-native-polish-reveal]"), null, "cleanup removes the title covers");
+assert.equal(modern.title.style.getPropertyValue("visibility"), "", "cleanup restores the host title");
 assert.equal((listeners.get("keydown") ?? []).length, 1, "cleanup keeps only the host listener");
 assert.equal((listeners.get("keyup") ?? []).length, 0);
-console.log("sidebar shortcut tests passed");
+console.log("sidebar shortcut and workspace rename tests passed");
