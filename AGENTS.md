@@ -23,7 +23,7 @@ The one exception is `README.zh-CN.md`, the Chinese translation of the README. K
 
 ## Checks
 
-Use Node.js 22 (`.nvmrc`). Run these before every commit:
+Use Node.js 22.6.0 or later (`.nvmrc` selects Node.js 22). Run these before every commit:
 
 ```sh
 npm ci --ignore-scripts   # first time only

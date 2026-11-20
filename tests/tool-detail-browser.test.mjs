@@ -18,9 +18,12 @@ try {
   const page = await browser.newPage();
   await page.setContent(`
     <div data-testid="tool-call-badge">
-      <div>Tool</div><div><div id="box" style="overflow-y:auto;max-height:300px">
+      <div>Tool</div><div><div id="box" style="overflow-y:auto!important;max-height:300px">
         <div id="content" style="height:40px">Initial</div>
       </div></div>
+    </div>
+    <div data-testid="tool-call-badge">
+      <div>Tool</div><div><div id="plain"><div id="plain-content" style="height:40px">Initial</div></div></div>
     </div>
   `);
   await page.addScriptTag({ type: 'module', content: `
@@ -50,12 +53,35 @@ try {
     await frame(); await frame();
     const changedTargetState = animation.playState;
     const finalHeight = box.getBoundingClientRect().height;
+    const overflow = [box.style.overflowX, box.style.overflowY, box.style.getPropertyPriority('overflow-y')];
+
+    const plain = document.getElementById('plain');
+    const plainContent = document.getElementById('plain-content');
+    plainContent.style.height = '100px';
+    plainContent.textContent = 'Expanded';
+    for (let i = 0; i < 10 && !plain.getAnimations().length; i++) await frame();
+    const plainAnimation = plain.getAnimations()[0];
+    if (!plainAnimation) throw new Error('Plain detail height animation did not start');
+    plainAnimation.pause();
+    plainAnimation.currentTime = 50;
+    const plainInFlight = plain.getBoundingClientRect().height;
+    plainContent.style.height = '140px';
+    plainContent.textContent = 'Expanded again';
+    await frame(); await frame();
+    const retargeted = plain.getAnimations()[0];
+    const plainTarget = retargeted?.effect.getKeyframes().map(keyframe => parseFloat(keyframe.height));
+    retargeted?.finish();
+    await Promise.resolve();
+    const plainHeight = plain.getBoundingClientRect().height;
     window.disposeMotion();
-    return { inFlight, sameTargetState, changedTargetState, finalHeight };
+    return { inFlight, sameTargetState, changedTargetState, finalHeight, overflow, plainInFlight, plainTarget, plainHeight };
   });
   assert.equal(result.sameTargetState, 'paused', 'unchanged destination keeps the current tween');
   assert.equal(result.changedTargetState, 'idle', 'a destination at the current height cancels the obsolete tween');
   assert.ok(Math.abs(result.finalHeight - result.inFlight) < 1, JSON.stringify(result));
+  assert.deepEqual(result.plainTarget, [Math.round(result.plainInFlight), 140], 'a plain detail retargets from its visible height');
+  assert.equal(result.plainHeight, 140);
+  assert.deepEqual(result.overflow, ['', 'auto', 'important'], 'cancellation restores the host overflow longhands and priority');
   await page.close();
 
   const risePage = await browser.newPage();
@@ -87,10 +113,17 @@ try {
     content.remove();
     await new Promise(resolve => requestAnimationFrame(resolve));
     const detached = active.has(rise);
+    document.body.appendChild(content);
+    const reinsertedTransform = content.style.transform;
+    rise.start(30);
+    content.style.transform = 'scale(0.5)';
+    content.remove();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const hostTransform = content.style.transform;
     window.disposeMotion();
-    return { initial, running, settled, restarted, cancelled, detached };
+    return { initial, running, settled, restarted, cancelled, detached, reinsertedTransform, hostTransform };
   });
-  assert.deepEqual(rises, { initial: 0, running: true, settled: false, restarted: true, cancelled: false, detached: false });
+  assert.deepEqual(rises, { initial: 0, running: true, settled: false, restarted: true, cancelled: false, detached: false, reinsertedTransform: '', hostTransform: 'scale(0.5)' });
   await risePage.close();
 
   const summaryPage = await browser.newPage();
@@ -225,14 +258,16 @@ try {
     const disclosurePage = await browser.newPage();
     await disclosurePage.setContent(`
       <style id="unistyles-web">.unistyles_abc123 { color: rgb(1, 2, 3); }</style>
-      <div data-testid="agent-chat-scroll" style="height:400px;overflow:auto">
+      <div data-testid="agent-chat-scroll" style="height:400px;overflow:auto;overflow-anchor:none">
+        <div style="height:100px"></div>
         <div data-history-row-id="group">
           ${nested ? '<div data-testid="tool-call-group"><div role="button" aria-expanded="true">Expanded group</div><div>' : ''}
-          <div data-testid="${badge ? 'tool-call-badge' : 'tool-call-group'}" id="group">
+          <div data-testid="${badge ? 'tool-call-badge' : 'tool-call-group'}" id="group" style="border:2px solid">
             ${wrappedHeader ? '<div id="header">' : ''}${displayContents ? '<div style="display:contents">' : ''}<div role="button" ${omitAria ? '' : 'aria-expanded="false"'} id="toggle"><div><span>Icon</span><div><span>${badge ? 'Thinking' : 'Ran 1 command'}</span></div></div></div>${displayContents ? '</div>' : ''}${wrappedHeader ? '<button data-testid="tool-call-open-file">Open file</button></div>' : ''}
           </div>
           ${nested ? '</div></div>' : ''}
         </div>
+        <div style="height:400px"></div>
       </div>
     `);
     await disclosurePage.addScriptTag({ type: 'module', content: `
@@ -247,12 +282,14 @@ try {
       };
       const group = document.getElementById('group');
       const toggle = document.getElementById('toggle');
+      const chat = group.closest('[data-testid="agent-chat-scroll"]');
       toggle.addEventListener('click', () => {
         const expanded = group.children.length > 1;
         if (toggle.hasAttribute('aria-expanded')) toggle.setAttribute('aria-expanded', String(!expanded));
         if (expanded) {
           group.lastElementChild.remove();
           document.getElementById('unistyles-web').textContent = '';
+          chat.scrollTop = 0;
         }
         else {
           const details = document.createElement('div');
@@ -266,6 +303,8 @@ try {
     await disclosurePage.waitForFunction(() => typeof window.disposeMotion === 'function');
     await disclosurePage.waitForFunction(() => !document.querySelector('[data-testid="agent-chat-scroll"]').hasAttribute('data-native-polish-hydrating'));
     const disclosure = await disclosurePage.evaluate(async () => {
+      const group = document.getElementById('group');
+      const chat = group.closest('[data-testid="agent-chat-scroll"]');
       const toggle = document.getElementById('toggle');
       const click = () => {
         toggle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
@@ -277,10 +316,15 @@ try {
       await frame(); await frame();
       await new Promise(resolve => setTimeout(resolve, 300));
       document.querySelector('#group .scroller').scrollTop = 90;
+      chat.scrollTop = 70;
+      const groupTopBefore = group.getBoundingClientRect().top;
+      const detailOffsetBefore = group.lastElementChild.getBoundingClientRect().top - groupTopBefore;
       click();
       await frame(); await frame();
       const animations = [...window.disclosureAnimations];
       const copy = document.querySelector('#group > [data-native-polish-ghost]');
+      const groupTopAfter = group.getBoundingClientRect().top;
+      const detailOffsetAfter = copy ? copy.getBoundingClientRect().top - groupTopAfter : null;
       const hasInertCopy = Boolean(copy?.hasAttribute('inert') && copy.getAttribute('aria-hidden') === 'true');
       const scrollTop = copy?.querySelector('.scroller')?.scrollTop;
       const color = copy ? getComputedStyle(copy.querySelector('.unistyles_abc123')).color : null;
@@ -295,12 +339,14 @@ try {
       await frame(); await frame();
       const reopenedCleanly = !document.querySelector('#group > [data-native-polish-ghost]') && document.getElementById('group').children.length > 1;
       window.disposeMotion();
-      return { animations, hasInertCopy, scrollTop, color, stripped, cleaned, reopenedCleanly };
+      return { animations, hasInertCopy, scrollTop, color, stripped, cleaned, reopenedCleanly, groupTopBefore, groupTopAfter, detailOffsetBefore, detailOffsetAfter };
     });
     assert.equal(disclosure.animations.length, 2, `opening and closing should animate: ${JSON.stringify(disclosure)}`);
     assert.ok(parseFloat(disclosure.animations[0][0]) < parseFloat(disclosure.animations[0][1]));
     assert.ok(parseFloat(disclosure.animations[1][0]) > parseFloat(disclosure.animations[1][1]));
     assert.ok(disclosure.hasInertCopy, 'closing keeps inert details within the collapsing group');
+    assert.ok(disclosure.groupTopAfter > disclosure.groupTopBefore, 'the host scrolls while closing');
+    assert.equal(disclosure.detailOffsetAfter, disclosure.detailOffsetBefore, 'the closing copy keeps its position within the group');
     assert.equal(disclosure.scrollTop, 90, 'the closing copy retains nested scroll position');
     assert.equal(disclosure.color, 'rgb(1, 2, 3)', 'the closing copy keeps styles removed by the host');
     assert.ok(disclosure.stripped, 'the closing copy has no interactive inputs or duplicate identifiers');

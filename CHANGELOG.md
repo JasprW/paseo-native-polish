@@ -17,13 +17,13 @@
 - Keep the chat at its real bottom when sending a message so it does not scroll too far and snap back.
 - Stop follow-output motion when scrolling upward so the conversation stays still during manual scrolling.
 - Ease new live tool summaries into view, while leaving loaded history and remounted summaries still.
-- Keep tool details visible inside their collapsing group when closed, including their scrolled position and styles.
+- Keep tool details aligned inside their collapsing group when the chat scrolls, preserving nested scroll positions and styles.
 - Use 400 ms for streamed assistant and Thinking text fades on Gentle and 200 ms on Quick.
 - Ease updated tool summary text upward over 320 ms so consecutive summaries are easier to follow.
 - Keep literal brackets, intervals and indexing after Unicode identifiers visible while holding incomplete link destinations and file references during streaming.
 - Restore Paseo’s assistant renderer when Enable motion or New messages is off, and let Tool calls and thinking independently control tool text reveals.
-- Stop tool detail height animations at the updated content height when a target changes, avoiding overshoot and snapping.
-- Release finished conversation motion controllers so closed conversations do not remain in memory.
+- Retarget tool detail height animations from their current height as content changes. Preserve the host's scrolling styles when the animation stops.
+- Release finished conversation motion controllers and clear their offsets on detached rows so reopened conversations stay aligned.
 - Stop the settings sidebar from replaying its opening animation. The entrance now runs once even when its initial width is zero.
 
 ## 0.4.21 · 2026-11-17

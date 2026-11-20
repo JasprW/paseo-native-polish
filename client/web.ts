@@ -59,7 +59,7 @@ interface Animation {
   cancel(): void; finished: Promise<unknown>;
   /** CSS animations only. */
   animationName?: string;
-  effect?: { getKeyframes?(): Record<string, unknown>[]; getComputedTiming?(): { progress?: number | null } } | null;
+  effect?: { target?: Element | null; getKeyframes?(): Record<string, unknown>[]; getComputedTiming?(): { progress?: number | null } } | null;
 }
 interface TextNode { nodeType: number; textContent: string | null; parentElement?: Element | null }
 interface TreeWalker { nextNode(): TextNode | null }
@@ -73,6 +73,7 @@ interface Element {
   style: Style; isConnected: boolean; textContent: string | null;
   complete?: boolean;
   scrollTop: number; scrollLeft: number; scrollHeight: number; clientWidth: number; clientHeight: number;
+  clientLeft: number; clientTop: number;
   closest(selector: string): Element | null;
   matches(selector: string): boolean;
   querySelector(selector: string): Element | null;
@@ -227,7 +228,7 @@ function textSliceRange(owner: Element, start: number, end?: number): { range: T
 }
 
 interface Snapshot { element: Element; box: Rect; copy: Element; parent: Element | null; grandparent: Element | null; next: Element | null }
-interface DisclosureDetail extends Snapshot { scrolls: [number, number, number][] }
+interface DisclosureDetail extends Snapshot { left: number; top: number; scrolls: [number, number, number][] }
 interface Disclosure {
   element: Element;
   height: number;
@@ -511,18 +512,26 @@ function captureDisclosure(el: Element | null): Disclosure | null {
     ? Number.parseFloat(window.getComputedStyle(toggle).getPropertyValue('margin-top')) || 0
     : undefined;
   const chat = isBubble ? el.closest(CHAT) : null;
+  const bounds = rect(el);
+  const originLeft = bounds.left + el.clientLeft - el.scrollLeft;
+  const originTop = bounds.top + el.clientTop - el.scrollTop;
   return {
     element: el,
-    height: rect(el).height,
+    height: bounds.height,
     children,
-    details: isBubble ? [] : children.slice(1).filter(visible).map(detail => ({
-      ...snapshot(detail),
-      scrolls: [detail, ...all(detail, '*').slice(0, 500)]
-        .filter(node => !node.closest('iframe, video, audio, input, textarea'))
-        .flatMap((node, index) =>
-          node.scrollTop || node.scrollLeft ? [[index, node.scrollTop, node.scrollLeft] as [number, number, number]] : [],
-        ),
-    })),
+    details: isBubble ? [] : children.slice(1).filter(visible).map(detail => {
+      const shot = snapshot(detail);
+      return {
+        ...shot,
+        left: shot.box.left - originLeft,
+        top: shot.box.top - originTop,
+        scrolls: [detail, ...all(detail, '*').slice(0, 500)]
+          .filter(node => !node.closest('iframe, video, audio, input, textarea'))
+          .flatMap((node, index) =>
+            node.scrollTop || node.scrollLeft ? [[index, node.scrollTop, node.scrollLeft] as [number, number, number]] : [],
+          ),
+      };
+    }),
     css: el.matches(TOOL) ? document.querySelector(UNISTYLES_SHEET)?.textContent ?? '' : undefined,
     toggle,
     expanded,
@@ -634,7 +643,7 @@ function installWebMotion(): () => void {
   function animate(el: Element, frames: Record<string, string | number>[], cleanup?: (cancelled?: boolean) => void, delay = 0, milliseconds = duration(), easing = EASING) {
     active.get(el)?.();
     if (!canAnimate()) { cleanup?.(false); return; }
-    play(active, el, frames, cleanup, delay, milliseconds, easing);
+    return play(active, el, frames, cleanup, delay, milliseconds, easing);
   }
   function play(registry: Map<Element, () => void>, el: Element, frames: Record<string, string | number>[], cleanup: ((cancelled?: boolean) => void) | undefined, delay: number, milliseconds: number, easing: string): Animation | undefined {
     if (typeof el.animate !== 'function') { cleanup?.(false); return undefined; }
@@ -655,17 +664,17 @@ function installWebMotion(): () => void {
     return animation;
   }
   function temporaryStyles(el: Element, values: Record<string, string>, priority = ''): () => void {
-    const previous = Object.keys(values).map(key => [key, el.style.getPropertyValue(key), el.style.getPropertyPriority(key)]);
+    // A shorthand can read as empty even when the host set one longhand.
+    const keys = Object.keys(values).flatMap(key => key === 'overflow' ? ['overflow-x', 'overflow-y'] : [key]);
+    const previous = keys.map(key => [key, el.style.getPropertyValue(key), el.style.getPropertyPriority(key)]);
+    for (const [key, value] of Object.entries(values)) el.style.setProperty(key, value, priority);
     // Compare against what the browser stored, not what was written: it
     // normalizes values (`0` reads back as `0px`, `0 0` as `0px 0px`).
-    const written = new Map<string, string>();
-    for (const [key, value] of Object.entries(values)) {
-      el.style.setProperty(key, value, priority); written.set(key, el.style.getPropertyValue(key));
-    }
+    const written = new Map(keys.map(key => [key, el.style.getPropertyValue(key)]));
     return () => {
       for (const [key, value, prevPriority] of previous) {
         // Restore only values still owned by us; React may have updated a style.
-        if (el.style.getPropertyValue(key) !== written.get(key)) continue;
+        if (el.style.getPropertyValue(key) !== written.get(key) || el.style.getPropertyPriority(key) !== priority) continue;
         if (value) el.style.setProperty(key, value, prevPriority);
         else el.style.removeProperty(key);
       }
@@ -1010,14 +1019,13 @@ function installWebMotion(): () => void {
       ? temporaryStyles(el, { position: 'relative' })
       : () => {};
     if (closingTool) {
-      const bounds = rect(el);
       for (const detail of before.details) {
         if (detail.element.isConnected) continue;
         const copy = exitCopy(detail);
         const sheet = restoreUnistyles(copy, before.css ?? '');
         if (sheet) sheets.push(sheet);
         for (const [key, value] of Object.entries({
-          position: 'absolute', left: `${detail.box.left - bounds.left}px`, top: `${detail.box.top - bounds.top}px`,
+          position: 'absolute', left: `${detail.left}px`, top: `${detail.top}px`,
           width: `${detail.box.width}px`, height: `${detail.box.height}px`, margin: '0',
           'box-sizing': 'border-box', 'pointer-events': 'none',
         })) copy.style.setProperty(key, value, 'important');
@@ -1190,6 +1198,10 @@ function installWebMotion(): () => void {
     restoreHost: () => void;
   }
   let toolDetailText = new Map<Element, ToolDetailTextState>();
+  const toolDetailHeightTweens = new WeakMap<Element, {
+    scrollBox: Element | null;
+    measureNaturalHeight: () => number;
+  }>();
   const toolDetailReveals = new Set<ToolDetailReveal>();
   const revealHostPositions = new WeakMap<Element, { count: number; restore: () => void }>();
   let revealFrame = 0;
@@ -2265,15 +2277,20 @@ function installWebMotion(): () => void {
     let animationFrame = 0;
     let lastFrameTime: number | null = null;
     let restoreParentClip: (() => void) | null = null;
+    let previousTransform: { value: string; priority: string } | undefined;
+    let writtenTransform: string | undefined;
     const applyOffset = (next: number) => {
       offset = next;
-      if (!element.isConnected) {
-        restoreParentClip?.();
-        restoreParentClip = null;
-        return;
-      }
+      const value = element.style.getPropertyValue('transform');
+      const priority = element.style.getPropertyPriority('transform');
+      const ownsTransform = value === writtenTransform && priority === '';
       if (next === 0) {
-        element.style.removeProperty('transform');
+        if (ownsTransform && previousTransform) {
+          if (previousTransform.value) element.style.setProperty('transform', previousTransform.value, previousTransform.priority);
+          else element.style.removeProperty('transform');
+        }
+        previousTransform = undefined;
+        writtenTransform = undefined;
         restoreParentClip?.();
         restoreParentClip = null;
       } else {
@@ -2287,8 +2304,11 @@ function installWebMotion(): () => void {
             restoreParentClip = temporaryStyles(parent, { 'overflow-y': 'clip' });
           }
         }
+        if (!ownsTransform) previousTransform = { value, priority };
         element.style.setProperty('transform', `translateY(${next}px)`);
+        writtenTransform = element.style.getPropertyValue('transform');
       }
+      if (!element.isConnected) return;
       if (toolDetailReveals.size > 0) {
         for (const reveal of Array.from(toolDetailReveals)) {
           if (!syncToolDetailReveal(reveal)) active.get(reveal.tintLayer)?.();
@@ -2320,13 +2340,13 @@ function installWebMotion(): () => void {
       start(distance) {
         // Retarget the running decay instead of restarting a fixed-duration
         // easing for every line. This is the reference stream's chunked feel.
-        if (Math.abs(distance) <= .5 || !canAnimate() || !getPreferences().messages) return;
+        if (!element.isConnected || Math.abs(distance) <= .5 || !canAnimate() || !getPreferences().messages) return;
         contentRises.add(rise);
         applyOffset(offset + distance);
         if (!animationFrame) animationFrame = window.requestAnimationFrame(step);
       },
       prepare(distance) {
-        if (Math.abs(distance) <= .5 || !canAnimate() || !getPreferences().messages) return;
+        if (!element.isConnected || Math.abs(distance) <= .5 || !canAnimate() || !getPreferences().messages) return;
         // The host follow-output frame is already queued when the mutation is
         // observed. Hold the inverse intact through that frame when starting
         // from rest, or accumulate onto the already-running decay without
@@ -2466,7 +2486,7 @@ function installWebMotion(): () => void {
     }
     return null;
   }
-  function measureToolDetailLayout(owner: Element, activeBoxes: ReadonlyMap<Element, () => void>): {
+  function measureToolDetailLayout(owner: Element, text: string, previous: ToolDetailTextState | undefined): {
     scrollBox: Element | null;
     scrollContent: Element | null;
     box: Element;
@@ -2475,17 +2495,23 @@ function installWebMotion(): () => void {
     contentHeight: number;
     maxHeight: number;
   } {
-    const scrollBox = findToolDetailScrollBox(owner);
+    const previousBox = previous?.owner === owner ? previous.box : null;
+    const previousTween = previousBox && (previousBox === owner || owner.contains?.(previousBox))
+      ? toolDetailHeightTweens.get(previousBox)
+      : undefined;
+    // An active clip can hide the host's scroll box from overflow detection.
+    const scrollBox = previousTween ? previousTween.scrollBox : findToolDetailScrollBox(owner);
     const scrollContent = scrollBox ? firstBoxChild(scrollBox) : null;
     const box = scrollBox ?? owner;
     const currentBoxHeight = rect(box).height;
-    const inFlightHeight = activeBoxes.has(box) ? currentBoxHeight : null;
+    const tween = toolDetailHeightTweens.get(box);
+    const inFlightHeight = tween ? currentBoxHeight : null;
     const style = window.getComputedStyle(box);
     const maxHeight = parseFloat(style.getPropertyValue('max-height'));
     const hasMaxHeight = Number.isFinite(maxHeight) && maxHeight > 0;
-    const contentHeight = scrollContent ? rect(scrollContent).height : currentBoxHeight;
+    const contentHeight = scrollContent ? rect(scrollContent).height : null;
     let naturalHeight = currentBoxHeight;
-    if (scrollBox && scrollContent && inFlightHeight !== null) {
+    if (scrollBox && contentHeight !== null && tween) {
       const extras =
         (parseFloat(style.getPropertyValue('border-top-width')) || 0) +
         (parseFloat(style.getPropertyValue('border-bottom-width')) || 0) +
@@ -2493,6 +2519,10 @@ function installWebMotion(): () => void {
         (parseFloat(style.getPropertyValue('padding-bottom')) || 0);
       const unclipped = contentHeight + extras;
       naturalHeight = hasMaxHeight ? Math.min(maxHeight, unclipped) : unclipped;
+    } else if (tween) {
+      naturalHeight = previous?.box === box && previous.text === text
+        ? previous.committedHeight
+        : tween.measureNaturalHeight();
     }
     return {
       scrollBox,
@@ -2500,7 +2530,7 @@ function installWebMotion(): () => void {
       box,
       naturalHeight,
       inFlightHeight,
-      contentHeight,
+      contentHeight: contentHeight ?? naturalHeight,
       maxHeight: hasMaxHeight ? maxHeight : Infinity,
     };
   }
@@ -2622,7 +2652,7 @@ function installWebMotion(): () => void {
           if (reveal.owner === previous.owner) active.get(reveal.tintLayer)?.();
         }
       }
-      const layout = measureToolDetailLayout(owner, active);
+      const layout = measureToolDetailLayout(owner, text, previous);
       const detailChat = detail.closest(CHAT);
       const detailChatState = detailChat ? chats.get(detailChat) : undefined;
       const detailChatHydrating = Boolean(
@@ -2659,11 +2689,30 @@ function installWebMotion(): () => void {
           // its cleanup can remove the replacement animation's clipping.
           active.get(layout.box)?.();
           const finishChatHeight = beginChatHeightAnimation(detailChat, layout.box);
-          const restore = temporaryStyles(layout.box, heightTransition.styles);
-          animate(layout.box, heightTransition.keyframes, (cancelled) => {
+          let restore = temporaryStyles(layout.box, heightTransition.styles);
+          const animation = animate(layout.box, heightTransition.keyframes, (cancelled) => {
+            toolDetailHeightTweens.delete(layout.box);
             restore();
             finishChatHeight(cancelled);
           }, 0, duration());
+          const effect = animation?.effect;
+          if (effect?.target === layout.box) {
+            toolDetailHeightTweens.set(layout.box, {
+              scrollBox: layout.scrollBox,
+              measureNaturalHeight() {
+                // Measure the host layout synchronously without losing the
+                // running tween's position or restarting its easing.
+                effect.target = null;
+                restore();
+                try {
+                  return rect(layout.box).height;
+                } finally {
+                  restore = temporaryStyles(layout.box, heightTransition.styles);
+                  effect.target = layout.box;
+                }
+              },
+            });
+          }
         } else if (layout.inFlightHeight !== null && previous.box === layout.box) {
           if (Math.abs(layout.naturalHeight - previous.committedHeight) < 2) {
             committedHeight = previous.committedHeight;

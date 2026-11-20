@@ -1,6 +1,6 @@
 # Contributing
 
-Use Node.js 22 and Paseo 0.13.0 or later. The live assistant renderer uses the timeline plugin API, and `paseo-plugin.json` declares the compatibility range.
+Use Node.js 22.6.0 or later for the test runner's type-stripping flag. Use Paseo 0.13.0 or later for the live assistant renderer's timeline API. The compatibility range is in `paseo-plugin.json`.
 
 ```sh
 npm ci --ignore-scripts
