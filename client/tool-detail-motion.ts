@@ -244,6 +244,7 @@ function findUnfinalizedInlineCodeStart(source: string, scanStart: number): numb
 }
 
 function findUnfinalizedLinkStart(source: string, scanStart: number): number {
+  const lastClosingBracket = source.lastIndexOf("]");
   for (let index = scanStart; index < source.length; index += 1) {
     if (source[index] === "\\") {
       index += 1;
@@ -269,37 +270,39 @@ function findUnfinalizedLinkStart(source: string, scanStart: number): number {
       !filePrefixMatch &&
       !hasBangPrefix &&
       tokenStart > scanStart &&
-      /[A-Za-z0-9_)\]]/.test(source[tokenStart - 1] ?? "");
+      /[\p{ID_Continue}$\u200C\u200D)\]]$/u.test(source.slice(Math.max(scanStart, tokenStart - 2), tokenStart));
 
-    const labelEnd = findClosedLinkLabelEnd(source, index);
+    const labelEnd = index < lastClosingBracket ? findClosedLinkLabelEnd(source, index) : -1;
+    const label = source.slice(index + 1, labelEnd === -1 ? source.length : labelEnd);
+    const explicitLabel = Boolean(filePrefixMatch) || hasBangPrefix;
+    const justOpened = labelEnd === -1 && label === "";
+    const fileNameLabel = /^[^\s[\](),]+\.[a-z][a-z0-9_-]*$/i.test(label);
+    const likelyLinkLabel = explicitLabel || (!precededByIdentifier &&
+      (justOpened || /^\d+$/.test(label) || fileNameLabel));
     if (labelEnd === -1) {
-      const openLabel = source.slice(index + 1);
-      if (/^\d+$/.test(openLabel) && precededByIdentifier) {
-        continue;
-      }
-      return tokenStart;
+      // A loose bracket may be prose or an interval. Keep reading after it
+      // so it cannot swallow the paragraph or hide a later, real link.
+      if (likelyLinkLabel && !label.includes("\n")) return tokenStart;
+      continue;
     }
 
     const nextChar = source[labelEnd + 1];
     if (nextChar === "(") {
-      if (!hasClosedLinkDestination(source, labelEnd + 1)) {
-        return tokenStart;
+      if (!hasClosedLinkDestination(source, labelEnd + 1) && source.indexOf("\n", labelEnd + 2) === -1) {
+        const isFileDestination = /^\s*<?file:/i.test(source.slice(labelEnd + 2));
+        // Keep an already visible, ambiguous label while its URL is incomplete.
+        return likelyLinkLabel || isFileDestination ? tokenStart : labelEnd + 1;
       }
       continue;
     }
     if (nextChar === "[") {
       const refEnd = findClosedLinkLabelEnd(source, labelEnd + 1);
-      if (refEnd === -1) return tokenStart;
+      if (refEnd === -1 && source.indexOf("\n", labelEnd + 2) === -1) {
+        return likelyLinkLabel ? tokenStart : labelEnd + 1;
+      }
       continue;
     }
-    if (labelEnd === source.length - 1) {
-      // A closed `[label]` at the very end of the stream may be waiting on
-      // `(file:///...)` in the next delta. Preserve identifier suffixes such
-      // as `items[0]` while holding standalone labels until the next delta.
-      if (!precededByIdentifier) {
-        return tokenStart;
-      }
-    }
+    if (labelEnd === source.length - 1 && likelyLinkLabel) return tokenStart;
   }
   return -1;
 }

@@ -49,7 +49,7 @@ CI only runs the typecheck, so run the tests locally. Static checks do not confi
 ## Versions and releases
 
 - `VERSION` in `client/web.ts`, `version` in `package.json` and the root entries in `package-lock.json` must always match.
-- `paseo-plugin.json` declares only a minimum Paseo version (currently `>=0.11.2`). Never add an upper bound.
+- Keep `paseo-plugin.json` at the minimum required Paseo version with no upper bound.
 - Behavior changes update README, `README.zh-CN.md`, OVERVIEW and CHANGELOG, and `docs/architecture.md` when an implementation boundary changes. `OVERVIEW.md` is the Paseo listing page: plain factual prose, no installation instructions, badges or changelog.
 - CHANGELOG entries go under `## x.y.z · YYYY-MM-DD`, newest first, as user-facing sentences that say what changed and why.
 

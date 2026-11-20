@@ -1,6 +1,6 @@
 # Contributing
 
-Use Node.js 22 and Paseo 0.11.2 or later. The plugin's compatibility range is declared in `paseo-plugin.json`.
+Use Node.js 22 and Paseo 0.13.0 or later. The live assistant renderer uses the timeline plugin API, and `paseo-plugin.json` declares the compatibility range.
 
 ```sh
 npm ci --ignore-scripts

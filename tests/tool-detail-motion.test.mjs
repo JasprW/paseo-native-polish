@@ -322,6 +322,32 @@ test("Expanded tool details summary only eases in newly arrived lines after init
   assert.deepEqual(findEnteringToolGroupItems(baseline, [line1, line2, line3]), [line3]);
 });
 
+test("literal brackets and intervals remain readable throughout a stream", () => {
+  for (const text of [
+    "Use ",
+    "Use [0, 1) for all values.",
+    "Use [0, 1) for all values. The bound is exclusive.",
+    "An ordinary [note]",
+    "An unmatched [note remains readable.",
+  ]) {
+    assert.equal(finalizeStreamingMarkdown(text), text);
+  }
+});
+
+test("fragmented links keep the readable prefix and wait for a complete destination", () => {
+  const prefix = "Use [0, 1) for all values. ";
+  const fragments = ["[guide", "[guide]", "[guide](", "[guide](https://example.test/guide", "[guide](https://example.test/guide)"];
+  assert.deepEqual(fragments.map(fragment => finalizeStreamingMarkdown(prefix + fragment)), [
+    prefix + "[guide",
+    prefix + "[guide]",
+    prefix + "[guide]",
+    prefix + "[guide]",
+    prefix + "[guide](https://example.test/guide)",
+  ]);
+  assert.equal(finalizeStreamingMarkdown(prefix + "See [web.ts](file:///src/web.ts#L42"), prefix + "See ");
+  assert.equal(finalizeStreamingMarkdown(prefix + "See [web.ts](file:///src/web.ts#L42)"), prefix + "See [web.ts](file:///src/web.ts#L42)");
+});
+
 test("finalizeStreamingMarkdown withholds unfinalized file link metadata and inline tokens until closed", () => {
   // Incomplete markdown links and `file:` metadata are held back until finalized.
   assert.equal(finalizeStreamingMarkdown("Check [web.ts"), "Check ");
@@ -398,8 +424,17 @@ test("numeric link labels never retract during streaming", () => {
     previous = current;
   }
   assert.equal(previous, text);
-  assert.equal(finalizeStreamingMarkdown("items[0"), "items[0");
-  assert.equal(finalizeStreamingMarkdown("items[0]"), "items[0]");
+  assert.equal(finalizeStreamingMarkdown("x [1]"), "x ");
+  assert.equal(finalizeStreamingMarkdown("x [1](https://a.b"), "x ");
+});
+
+test("numeric indexing stays visible after Unicode and dollar identifier endings", () => {
+  for (const identifier of ["items", "donnéesÉ", "資料", "cafe\u0301", "𐐀", "items$"]) {
+    for (const suffix of ["[", "[0", "[0]"]) {
+      const text = identifier + suffix;
+      assert.equal(finalizeStreamingMarkdown(text), text);
+    }
+  }
 });
 
 test("toolDetailTextTransition recovers the entering link text when previous snapshot had unfinalized link syntax", () => {

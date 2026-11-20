@@ -354,9 +354,20 @@ try {
   await revealPage.addScriptTag({ type: 'module', content: `
     import { defaults, getPreferences, setPreferences } from '${preferences}';
     import { installMotion } from '${adapter}';
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function(...args) {
+      const animation = animate.apply(this, args);
+      const overlay = this.parentElement;
+      if (overlay?.hasAttribute('data-native-polish-ghost') && overlay.children[1] === this) {
+        // Hold the tint from creation. Its completion owns overlay cleanup.
+        animation.pause();
+        animation.currentTime = 0;
+      }
+      return animation;
+    };
     setPreferences({ ...defaults, edgePeek: false, elasticScroll: false });
     window.disposeMotion = installMotion();
-    window.setPace = pace => setPreferences({ ...getPreferences(), pace });
+    window.setRevealPreferences = values => setPreferences({ ...getPreferences(), ...values });
   ` });
   await revealPage.waitForFunction(() => typeof window.disposeMotion === 'function');
   const reveal = await revealPage.evaluate(async () => {
@@ -394,19 +405,32 @@ try {
     await Promise.resolve();
     const hostPosition = host.style.position;
     host.style.position = '';
-    window.setPace('quick');
+    window.setRevealPreferences({ pace: 'quick' });
     host.append(' foxtrot');
     thought.append(' on Quick');
     for (let i = 0; i < 10 && roots().length < 1; i++) await frame();
     const quick = [timings(host), timings(thinking)];
+    const switches = [];
+    for (const [messages, timeline] of [[false, false], [false, true], [true, false], [true, true]]) {
+      window.setRevealPreferences({ messages, timeline });
+      host.append(' new words');
+      thought.append(' more thought');
+      await frame(); await frame();
+      switches.push([roots().length > 0, roots(thinking).length > 0]);
+    }
+    window.setRevealPreferences({ messages: true, timeline: true });
     host.append(' golf');
+    for (let i = 0; i < 10 && roots().length < 1; i++) await frame();
+    host.append(' hotel');
     for (let i = 0; i < 10 && roots().length < 2; i++) await frame();
     if (roots().length !== 2) throw new Error('Expected two reveals before disposal');
     window.disposeMotion();
-    return { gentle, quick, firstFinished, lastFinished, hostPosition, disposedPosition: getComputedStyle(host).position, disposedRoots: roots().length };
+    return { gentle, quick, switches, firstFinished, lastFinished, hostPosition, disposedPosition: getComputedStyle(host).position, disposedRoots: roots().length };
   });
   assert.deepEqual(reveal.gentle, [[400, 400], [400, 400]], 'Gentle uses 400 ms for both layers in assistant and Thinking text');
   assert.deepEqual(reveal.quick, [[200, 200], [200, 200]], 'switching to Quick uses 200 ms for both layers on the next text update');
+  assert.deepEqual(reveal.switches, [[false, false], [false, true], [true, false], [true, true]],
+    'New messages controls assistant text and Tool calls and thinking controls Thinking text');
   assert.deepEqual(reveal.firstFinished, { position: 'relative', remaining: 1 });
   assert.deepEqual(reveal.lastFinished, { position: 'static', remaining: 0 });
   assert.equal(reveal.hostPosition, 'absolute', 'release preserves a host position change');

@@ -2589,12 +2589,13 @@ function installWebMotion(): () => void {
     };
   }
   function animateGrowingToolText(allow: boolean) {
+    const { messages, timeline, pace } = getPreferences();
     for (const reveal of Array.from(toolDetailReveals)) {
       if (!syncToolDetailReveal(reveal)) active.get(reveal.tintLayer)?.();
     }
 
     const next = new Map<Element, ToolDetailTextState>();
-    const targets: Array<{ detail: Element; owner: Element; isToolDetail: boolean; isStreaming: boolean; allowTextReveal: boolean }> = [];
+    const targets: Array<{ detail: Element; owner: Element; isToolDetail: boolean; isStreaming: boolean }> = [];
     for (const tool of live(TOOL).slice(-80)) {
       if (tool.matches('[data-testid="tool-call-group"]')) continue;
       const header = firstBoxChild(tool);
@@ -2606,14 +2607,13 @@ function installWebMotion(): () => void {
           owner: firstBoxChild(detail) ?? detail,
           isToolDetail: true,
           isStreaming,
-          allowTextReveal: true,
         });
       }
     }
     for (const stream of live('[data-testid="native-polish-streaming-assistant"]')) {
-      targets.push({ detail: stream, owner: stream, isToolDetail: false, isStreaming: true, allowTextReveal: true });
+      targets.push({ detail: stream, owner: stream, isToolDetail: false, isStreaming: true });
     }
-    for (const { detail, owner, isToolDetail, isStreaming, allowTextReveal } of targets) {
+    for (const { detail, owner, isToolDetail, isStreaming } of targets) {
       if (!visible(owner)) continue;
       const text = owner.textContent ?? '';
       const previous = toolDetailText.get(detail);
@@ -2643,7 +2643,7 @@ function installWebMotion(): () => void {
         }
         if (layout.scrollContent) riseFor(toolDetailRises, layout.scrollContent)?.cancel();
       }
-      const canAnimateTextReveal = allow && !detailChatHydrating && (getPreferences().messages || getPreferences().timeline);
+      const canAnimateTextReveal = allow && !detailChatHydrating && (isToolDetail ? timeline : messages);
       const canAnimateDetail = canAnimateTextReveal && Date.now() >= quietUntil;
       const manualDisclosure = pending?.disclosure?.element === detail.closest(TOOL);
 
@@ -2695,14 +2695,15 @@ function installWebMotion(): () => void {
         contentHeight: layout.contentHeight,
       });
 
+      if (!(isToolDetail ? canAnimateDetail : canAnimateTextReveal)) continue;
       const baselineText =
         previous !== undefined
           ? previous.text
           : isToolDetail && isStreaming && !manualDisclosure && text.length > 0 && text.length <= 48
             ? ''
             : undefined;
-      const transition = allowTextReveal ? toolDetailTextTransition(baselineText, text, getPreferences().pace) : null;
-      if (!(isToolDetail ? canAnimateDetail : canAnimateTextReveal) || !transition) continue;
+      const transition = toolDetailTextTransition(baselineText, text, pace);
+      if (!transition) continue;
 
       // Cover only the appended glyph rectangles with a paired backdrop-blur
       // layer and background-coloured tint layer, then fade them together

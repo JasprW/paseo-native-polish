@@ -6,6 +6,7 @@
 
 ## 0.4.22 · 2026-11-17
 
+- Require Paseo 0.13.0 or later for the plugin API that powers the live assistant renderer.
 - Ease newly arriving chat images into view and show a skeleton while they load when Paseo has no spinner.
 - Restore tool expand/collapse motion for newer chat headers that wrap the disclosure button beside Open file, including controls without an expanded-state attribute.
 - Ease approval prompts and AskQuestion cards into view when New messages motion is enabled. Give submitted question answers the same entrance as regular messages, even when their completed tool arrives alongside them, and wait for the question-removal scroll motion to settle before revealing the answer.
@@ -19,7 +20,8 @@
 - Keep tool details visible inside their collapsing group when closed, including their scrolled position and styles.
 - Use 400 ms for streamed assistant and Thinking text fades on Gentle and 200 ms on Quick.
 - Ease updated tool summary text upward over 320 ms so consecutive summaries are easier to follow.
-- Keep numeric link labels hidden until their destinations arrive so streamed text does not flash and retract.
+- Keep literal brackets, intervals and indexing after Unicode identifiers visible while holding incomplete link destinations and file references during streaming.
+- Restore Paseo’s assistant renderer when Enable motion or New messages is off, and let Tool calls and thinking independently control tool text reveals.
 - Stop tool detail height animations at the updated content height when a target changes, avoiding overshoot and snapping.
 - Release finished conversation motion controllers so closed conversations do not remain in memory.
 - Stop the settings sidebar from replaying its opening animation. The entrance now runs once even when its initial width is zero.
