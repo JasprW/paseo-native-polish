@@ -1,12 +1,8 @@
 # Changelog
 
-## 0.4.23 · 2026-11-19
+## 0.4.24 · 2026-11-21
 
 - Show inline code ending in a backslash as soon as it closes so the following text stays visible during streaming.
-- Restore the sidebar title reveal for workspace names that change outside the inline rename editor, such as when the displayed branch name changes. Saving an inline rename shows the new title immediately.
-
-## 0.4.22 · 2026-11-17
-
 - Require Paseo 0.13.0 or later for the plugin API that powers the live assistant renderer.
 - Ease newly arriving chat images into view and show a skeleton while they load when Paseo has no spinner.
 - Restore tool expand/collapse motion for newer chat headers that wrap the disclosure button beside Open file, including controls without an expanded-state attribute.
@@ -25,6 +21,13 @@
 - Restore Paseo’s assistant renderer when Enable motion or New messages is off, and let Tool calls and thinking independently control tool text reveals.
 - Retarget tool detail height animations from their current height as content changes. Preserve the host's scrolling styles when the animation stops.
 - Release finished conversation motion controllers and clear their offsets on detached rows so reopened conversations stay aligned.
+
+## 0.4.23 · 2026-11-19
+
+- Restore the sidebar title reveal for workspace names that change outside the inline rename editor, such as when the displayed branch name changes. Saving an inline rename shows the new title immediately.
+
+## 0.4.22 · 2026-11-17
+
 - Stop the settings sidebar from replaying its opening animation. The entrance now runs once even when its initial width is zero.
 
 ## 0.4.21 · 2026-11-17
