@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.24 · 2026-11-21
+
+- Show inline code ending in a backslash as soon as it closes so the following text stays visible during streaming.
+- Require Paseo 0.13.0 or later for the plugin API that powers the live assistant renderer.
+- Ease newly arriving chat images into view and show a skeleton while they load when Paseo has no spinner.
+- Restore tool expand/collapse motion for newer chat headers that wrap the disclosure button beside Open file, including controls without an expanded-state attribute.
+- Ease approval prompts and AskQuestion cards into view when New messages motion is enabled. Give submitted question answers the same entrance as regular messages, even when their completed tool arrives alongside them, and wait for the question-removal scroll motion to settle before revealing the answer.
+- Animate explicitly submitted question answers even when the conversation is still restoring its history, without replaying restored messages.
+- Keep Thinking text clipped during successive height updates to prevent flicker while it streams.
+- Keep long user messages readable while Paseo's expansion control is unavailable.
+- Keep overlapping streamed-text reveals aligned until the last reveal finishes.
+- Keep the chat at its real bottom when sending a message so it does not scroll too far and snap back.
+- Stop follow-output motion when scrolling upward so the conversation stays still during manual scrolling.
+- Ease new live tool summaries into view, while leaving loaded history and remounted summaries still.
+- Keep tool details aligned inside their collapsing group when the chat scrolls, preserving nested scroll positions and styles.
+- Use 400 ms for streamed assistant and Thinking text fades on Gentle and 200 ms on Quick.
+- Ease updated tool summary text upward over 320 ms so consecutive summaries are easier to follow.
+- Keep literal brackets, intervals and indexing after Unicode identifiers visible while holding incomplete link destinations and file references during streaming.
+- Restore Paseo’s assistant renderer when Enable motion or New messages is off, and let Tool calls and thinking independently control tool text reveals.
+- Retarget tool detail height animations from their current height as content changes. Preserve the host's scrolling styles when the animation stops.
+- Release finished conversation motion controllers and clear their offsets on detached rows so reopened conversations stay aligned.
+
 ## 0.4.23 · 2026-11-19
 
 - Restore the sidebar title reveal for workspace names that change outside the inline rename editor, such as when the displayed branch name changes. Saving an inline rename shows the new title immediately.

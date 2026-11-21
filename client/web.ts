@@ -2,10 +2,47 @@ import { Platform } from "react-native";
 import { defaults, edgePeekWidths, getPreferences, setPreferences, subscribePreferences } from "./preferences";
 import { installElasticScroll } from "./elastic-scroll";
 import { installEdgePeek } from "./edge-peek";
+import {
+  BOTTOM_SCROLL_EPSILON_PX,
+  isFollowingScrollBottom,
+  resolveChatHydrationQuietUntil,
+  resolveFollowOutputScroll,
+  resolveStreamingAssistantGaps,
+  resolveUserMessageEntranceDelayMs,
+  shouldAllowFollowOutputRise,
+  shouldAnimateFooterRise,
+  shouldExpandWorkedFooterLayout,
+  shouldQueueWorkedFooterEntrance,
+  workedFooterEntranceMotion,
+} from "./footer-motion";
 import { leaseMotion } from "./motion-runtime";
 import { OUTLINE_PREVIEW_TEST_ID, OUTLINE_RAIL_TEST_ID, outlineRailDuration, outlineRailKeyframes, outlineRailProgress } from "./outline-rail-motion";
 import { cascadeDelays } from "./sidebar-cascade";
 import { isChangeTreeRowTestId, treeMotionOwners, treeRowTranslation, treeRowsAfterAnchor } from "./tree-motion";
+import {
+  TOOL_LABEL_UPDATE_DURATION_MS,
+  TOOL_LABEL_UPDATE_FRAMES,
+  TOOL_SHIMMER_DURATION_MS,
+  TOOL_SHIMMER_PEAK_WIDTH_PX,
+  TOOL_SHIMMER_TRACK_END_PX,
+  TOOL_SHIMMER_TRACK_START_PX,
+  findEnteringToolGroupItems,
+  isRectOccluded,
+  resolveToolDetailRevealBoxes,
+  shouldKeepToolShimmerActive,
+  toolDetailHeightTransition,
+  toolDetailShimmerStyle,
+  toolDetailTextTransition,
+  toolLabelUpdateTransition,
+  type ToolDetailShimmerState,
+  type ToolLabelState,
+} from "./tool-detail-motion";
+import { messageEntranceMotion, shouldQueueMessageEntrance } from "./message-entry-motion";
+import {
+  chatDisclosureMotion,
+  resolveChatBubbleExpandedState,
+  shouldAnimateChatDisclosure,
+} from "./chat-disclosure-motion";
 
 /* Desktop/Web adapter for Paseo 0.11.2. Host DOM is not a public plugin API.
  * Keep selectors here; native clients never touch these globals. No host events
@@ -22,12 +59,21 @@ interface Animation {
   cancel(): void; finished: Promise<unknown>;
   /** CSS animations only. */
   animationName?: string;
-  effect?: { getKeyframes?(): Record<string, unknown>[]; getComputedTiming?(): { progress?: number | null } } | null;
+  effect?: { target?: Element | null; getKeyframes?(): Record<string, unknown>[]; getComputedTiming?(): { progress?: number | null } } | null;
+}
+interface TextNode { nodeType: number; textContent: string | null; parentElement?: Element | null }
+interface TreeWalker { nextNode(): TextNode | null }
+interface TextRange {
+  setStart(node: TextNode, offset: number): void;
+  setEnd(node: TextNode, offset: number): void;
+  getClientRects(): ArrayLike<Rect>;
 }
 interface Element {
   nodeType: number; parentElement: Element | null; nextElementSibling: Element | null; children: ArrayLike<Element>;
   style: Style; isConnected: boolean; textContent: string | null;
-  scrollTop: number; scrollLeft: number; scrollHeight: number; clientHeight: number;
+  complete?: boolean;
+  scrollTop: number; scrollLeft: number; scrollHeight: number; clientWidth: number; clientHeight: number;
+  clientLeft: number; clientTop: number;
   closest(selector: string): Element | null;
   matches(selector: string): boolean;
   querySelector(selector: string): Element | null;
@@ -42,6 +88,7 @@ interface Element {
   appendChild(child: Element): void;
   insertBefore(child: Element, next: Element | null): void;
   remove(): void;
+  contains?(other: Element | null): boolean;
   animate(frames: Record<string, string | number>[], options: { duration: number; easing: string; fill?: string; delay?: number }): Animation;
   getAnimations?(): Animation[];
 }
@@ -55,6 +102,8 @@ declare const document: {
   querySelector(selector: string): Element | null;
   querySelectorAll(selector: string): ArrayLike<Element>;
   createElement(tag: string): Element;
+  createRange(): TextRange;
+  createTreeWalker(root: Element, whatToShow: number): TreeWalker;
   addEventListener(type: string, callback: Listener, capture?: boolean): void;
   removeEventListener(type: string, callback: Listener, capture?: boolean): void;
 };
@@ -62,7 +111,7 @@ declare const window: {
   innerWidth: number; innerHeight: number;
   getComputedStyle(element: Element): Style;
   matchMedia(query: string): Media;
-  requestAnimationFrame(callback: () => void): number;
+  requestAnimationFrame(callback: (timestamp: number) => void): number;
   cancelAnimationFrame(id: number): void;
   setTimeout(callback: () => void, ms: number): number;
   clearTimeout(id: number): void;
@@ -76,6 +125,8 @@ interface Mutation { type: string; target: Element; attributeName: string | null
 declare const MutationObserver: new (callback: (records: Mutation[]) => void) => { observe(target: Element, options: { subtree: boolean; childList: boolean; characterData: boolean; attributes: boolean; attributeFilter: string[] }): void; disconnect(): void };
 
 const TOOL = '[data-testid="tool-call-badge"], [data-testid="tool-call-group"]';
+const TOOL_GROUP_ITEM = '[data-testid="tool-call-badge"], [data-testid="timeline-plan-card"], [data-testid="speak-message"]';
+const USER_MESSAGE = '[data-testid="user-message"]';
 const FILE_TREE = '[data-testid="file-explorer-tree-scroll"]';
 const FILE_ROW = '[data-testid^="file-explorer-row-"]:not([data-testid$="-name"])';
 const CHANGE_TREE = '[data-testid="changes-file-tree"]';
@@ -104,7 +155,7 @@ function metaItemKey(el: Element): string {
   if (testid === 'sidebar-workspace-project') return 'project';
   return 'pr';
 }
-const TITLE_EXCLUDED = '[role="button"],[role="menuitem"],svg';
+const TITLE_EXCLUDED = '[role="button"],[role="menuitem"],svg,[data-native-polish-reveal],[data-native-polish-ghost]';
 const WORKSPACE_TITLE = '[data-testid^="sidebar-workspace-title-"]';
 const WORKSPACE_TITLE_INPUT = '[data-testid^="sidebar-workspace-rename-input-"]';
 const TITLE_REVEAL_HORIZON_MS = 150;
@@ -132,8 +183,67 @@ function hasAncestor(el: Element, ancestors: Iterable<Element>): boolean {
   return false;
 }
 
+function nearestPaintedBackground(element: Element): string {
+  for (let current: Element | null = element; current; current = current.parentElement) {
+    const background = window.getComputedStyle(current).getPropertyValue('background-color');
+    const transparent = background === 'transparent' || /^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$/i.test(background);
+    if (background && !transparent) return background;
+  }
+  return 'transparent';
+}
+
+function textSliceRange(owner: Element, start: number, end?: number): { range: TextRange; anchor: Element } | null {
+  const walker = document.createTreeWalker(owner, 4);
+  const nodes: TextNode[] = [];
+  let total = 0;
+  let startNode: TextNode | null = null;
+  let startOffset = 0;
+  let endNode: TextNode | null = null;
+  let endOffset = 0;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.parentElement?.closest('[data-native-polish-ghost], [data-native-polish-reveal]')) continue;
+    const length = node.textContent?.length ?? 0;
+    nodes.push(node);
+    if (!startNode && start <= total + length) {
+      startNode = node;
+      startOffset = Math.max(0, start - total);
+    }
+    if (end !== undefined && !endNode && end <= total + length) {
+      endNode = node;
+      endOffset = Math.max(0, end - total);
+    }
+    total += length;
+  }
+  const finalNode = nodes[nodes.length - 1];
+  if (!startNode || !finalNode || start >= total) return null;
+  if (!endNode) {
+    endNode = finalNode;
+    endOffset = finalNode.textContent?.length ?? 0;
+  }
+  if (startNode === endNode && endOffset <= startOffset) return null;
+  const range = document.createRange();
+  range.setStart(startNode, startOffset);
+  range.setEnd(endNode, endOffset);
+  return { range, anchor: startNode.parentElement ?? owner };
+}
+
 interface Snapshot { element: Element; box: Rect; copy: Element; parent: Element | null; grandparent: Element | null; next: Element | null }
-interface Disclosure { element: Element; height: number; children: Element[]; details: Snapshot[] }
+interface DisclosureDetail extends Snapshot { left: number; top: number; scrolls: [number, number, number][] }
+interface Disclosure {
+  element: Element;
+  height: number;
+  children: Element[];
+  details: DisclosureDetail[];
+  css?: string;
+  toggle?: Element | null;
+  expanded?: boolean | null;
+  isBubble?: boolean;
+  preview?: Element | null;
+  previewHeight?: number;
+  toggleMarginTop?: number;
+  chat?: Element | null;
+  scrollTop?: number;
+}
 interface RowSnapshot extends Snapshot { key: string }
 interface Tree { element: Element; rows: RowSnapshot[]; anchorKey: string | null }
 interface PaneBox { element: Element; box: Rect }
@@ -148,10 +258,22 @@ const TAB_ROW = '[data-testid="workspace-tabs-scroll"]';
 // Tooltips are transient hover affordances. Giving their text an entrance and
 // a cloned exit makes it flash both when the pointer arrives and when it goes.
 const FLOATING = '[data-menu-surface="true"], [role="dialog"]';
+const MODAL_OCCLUDER =
+  '[role="dialog"], [aria-modal="true"], [data-menu-surface="true"], ' +
+  '[data-testid="tool-call-group-sheet"], [data-testid="composer-fullscreen"], ' +
+  '[data-testid="composer-autocomplete-popover"]';
+const OVERLAY_OCCLUDER =
+  MODAL_OCCLUDER +
+  ', [role="tooltip"], [data-testid="scroll-to-bottom-button"], ' +
+  '[data-testid="composer-diff-stat-pill"], [data-testid="composer-import-agent-pill"], ' +
+  '[data-testid="composer-parent-agent-pill"]';
 const CHAT = '[data-testid="agent-chat-scroll"]';
 const HISTORY_ROW = '[data-history-row-id]';
+const CHAT_IMAGE_CONTENT = '[data-testid="native-polish-streaming-assistant"], [data-testid="assistant-message"], [data-testid="user-message"], [data-testid="tool-call-badge"]';
 const OUTLINE_RAIL = `[data-testid="${OUTLINE_RAIL_TEST_ID}"]`;
 const OUTLINE_PREVIEW = `[data-testid="${OUTLINE_PREVIEW_TEST_ID}"]`;
+const CHAT_TIMELINE = '[data-testid="agent-chat-timeline"]';
+const CHAT_CONTENT = '[data-testid="agent-chat-content"]';
 const EDITING = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[data-testid="file-source-editor"],.cm-editor,.monaco-editor,[data-testid="terminal-surface"],.xterm';
 const SHORTCUT_EDITOR = '[data-testid="file-source-editor"],.cm-editor,.monaco-editor,[data-testid="terminal-surface"],.xterm';
 // Some RN web Pressables omit a role. Keep the known interactive tree/sidebar
@@ -329,13 +451,36 @@ function restoreUnistyles(copy: Element, css: string): Element | null {
   document.head.appendChild(style);
   return style;
 }
+function bubbleToggleFor(el: Element): Element | null {
+  const ariaToggle = el.querySelector(
+    '[role="button"][aria-expanded]',
+  );
+  if (ariaToggle) return ariaToggle;
+  const children = Array.from(el.children);
+  if (children.length < 2) return null;
+  const last = children[children.length - 1];
+  return last?.matches('button, [role="button"]') ? last : null;
+}
+function bubbleExpandedState(toggle: Element | null, preview: Element | null): boolean | null {
+  return resolveChatBubbleExpandedState({
+    ariaExpanded: toggle?.getAttribute('aria-expanded'),
+    previewMaxHeight: preview ? window.getComputedStyle(preview).getPropertyValue('max-height') : null,
+    previewChildCount: preview ? preview.children.length : null,
+  });
+}
+function disclosureChildren(el: Element): Element[] {
+  return Array.from(el.children).filter(child => !el.matches(TOOL) || child.getAttribute('data-native-polish-ghost') === null);
+}
 function disclosureFor(target: Element): Element | null {
   const tool = target.closest(TOOL);
   if (tool) {
     // Only the header toggles disclosure. Detail links, selection, file-open
     // buttons and nested tools keep their own existing behavior.
     const header = Array.from(tool.children)[0];
-    if (header && target.closest('[role="button"]') === header) return tool;
+    const button = target.closest('button, [role="button"]');
+    // Newer hosts wrap the disclosure and file-open buttons in one header.
+    if (header && button && (button === header ||
+      (hasAncestor(button, [header]) && (button === firstBoxChild(header) || button.getAttribute('aria-expanded') !== null)))) return tool;
   }
   const project = target.closest(PROJECT);
   if (project && target.closest('[role="button"]') === project) return project.closest('[role="group"]');
@@ -344,12 +489,59 @@ function disclosureFor(target: Element): Element | null {
   if (target.closest('[data-testid^="sidebar-project-filter-"], [data-testid^="sidebar-host-filter-"], [data-testid^="sidebar-label-filter-"], [data-testid^="sidebar-grouping-"]')) return null;
   const expanded = target.closest('[role="button"][aria-expanded]');
   if (expanded?.closest('[data-testid^="sidebar-"]')) return expanded.parentElement;
+  if (expanded?.closest(USER_MESSAGE)) return expanded.parentElement;
+  const button = target.closest('button, [role="button"]');
+  const bubble = button?.parentElement;
+  if (button && bubble && button.closest(USER_MESSAGE) && bubbleToggleFor(bubble) === button) {
+    return bubble;
+  }
   return null;
 }
 function captureDisclosure(el: Element | null): Disclosure | null {
   if (!el || !visible(el)) return null;
-  const children = Array.from(el.children);
-  return { element: el, height: rect(el).height, children, details: children.slice(1).filter(visible).map(snapshot) };
+  const children = disclosureChildren(el);
+  const isBubble = Boolean(el.closest(USER_MESSAGE));
+  const toggle = isBubble ? bubbleToggleFor(el) : el.querySelector('[role="button"][aria-expanded]');
+  const preview = isBubble ? (children.find(child => child !== toggle) ?? null) : null;
+  const ariaExpanded = toggle?.getAttribute('aria-expanded');
+  const expanded = isBubble
+    ? bubbleExpandedState(toggle, preview)
+    : (ariaExpanded === 'true' ? true : ariaExpanded === 'false' ? false : null);
+  const previewHeight = preview ? rect(preview).height : undefined;
+  const toggleMarginTop = isBubble && toggle
+    ? Number.parseFloat(window.getComputedStyle(toggle).getPropertyValue('margin-top')) || 0
+    : undefined;
+  const chat = isBubble ? el.closest(CHAT) : null;
+  const bounds = rect(el);
+  const originLeft = bounds.left + el.clientLeft - el.scrollLeft;
+  const originTop = bounds.top + el.clientTop - el.scrollTop;
+  return {
+    element: el,
+    height: bounds.height,
+    children,
+    details: isBubble ? [] : children.slice(1).filter(visible).map(detail => {
+      const shot = snapshot(detail);
+      return {
+        ...shot,
+        left: shot.box.left - originLeft,
+        top: shot.box.top - originTop,
+        scrolls: [detail, ...all(detail, '*').slice(0, 500)]
+          .filter(node => !node.closest('iframe, video, audio, input, textarea'))
+          .flatMap((node, index) =>
+            node.scrollTop || node.scrollLeft ? [[index, node.scrollTop, node.scrollLeft] as [number, number, number]] : [],
+          ),
+      };
+    }),
+    css: el.matches(TOOL) ? document.querySelector(UNISTYLES_SHEET)?.textContent ?? '' : undefined,
+    toggle,
+    expanded,
+    isBubble,
+    preview,
+    previewHeight,
+    toggleMarginTop,
+    chat,
+    scrollTop: chat ? chat.scrollTop : undefined,
+  };
 }
 function closestChangeRow(target: Element): Element | null {
   for (let cursor: Element | null = target; cursor; cursor = cursor.parentElement) {
@@ -384,7 +576,7 @@ function captureTree(target: Element): Tree | null {
 }
 
 // Keep in step with package.json. leaseMotion uses it to pick which bundle owns the window.
-const VERSION = '0.4.23';
+const VERSION = '0.4.24';
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
@@ -448,41 +640,42 @@ function installWebMotion(): () => void {
     }
     return true;
   };
-  function animate(el: Element, frames: Record<string, string | number>[], cleanup?: () => void, delay = 0, milliseconds = duration(), easing = EASING) {
+  function animate(el: Element, frames: Record<string, string | number>[], cleanup?: (cancelled?: boolean) => void, delay = 0, milliseconds = duration(), easing = EASING) {
     active.get(el)?.();
-    if (!canAnimate()) { cleanup?.(); return; }
-    play(active, el, frames, cleanup, delay, milliseconds, easing);
+    if (!canAnimate()) { cleanup?.(false); return; }
+    return play(active, el, frames, cleanup, delay, milliseconds, easing);
   }
-  function play(registry: Map<Element, () => void>, el: Element, frames: Record<string, string | number>[], cleanup: (() => void) | undefined, delay: number, milliseconds: number, easing: string): Animation | undefined {
-    if (typeof el.animate !== 'function') { cleanup?.(); return undefined; }
+  function play(registry: Map<Element, () => void>, el: Element, frames: Record<string, string | number>[], cleanup: ((cancelled?: boolean) => void) | undefined, delay: number, milliseconds: number, easing: string): Animation | undefined {
+    if (typeof el.animate !== 'function') { cleanup?.(false); return undefined; }
     let animation: Animation;
     try { animation = el.animate(frames, { duration: milliseconds, easing, fill: 'both', delay }); }
-    catch { cleanup?.(); return undefined; }
+    catch { cleanup?.(false); return undefined; }
     let finished = false;
-    const stop = () => {
+    const finish = (cancelled: boolean) => {
       if (finished) return;
       finished = true;
       animation.cancel();
       if (registry.get(el) === stop) registry.delete(el);
-      cleanup?.();
+      cleanup?.(cancelled);
     };
+    const stop = () => finish(true);
     registry.set(el, stop);
-    void animation.finished.then(stop, stop);
+    void animation.finished.then(() => finish(false), () => finish(true));
     return animation;
   }
-  function temporaryStyles(el: Element, values: Record<string, string>): () => void {
-    const previous = Object.keys(values).map(key => [key, el.style.getPropertyValue(key), el.style.getPropertyPriority(key)]);
+  function temporaryStyles(el: Element, values: Record<string, string>, priority = ''): () => void {
+    // A shorthand can read as empty even when the host set one longhand.
+    const keys = Object.keys(values).flatMap(key => key === 'overflow' ? ['overflow-x', 'overflow-y'] : [key]);
+    const previous = keys.map(key => [key, el.style.getPropertyValue(key), el.style.getPropertyPriority(key)]);
+    for (const [key, value] of Object.entries(values)) el.style.setProperty(key, value, priority);
     // Compare against what the browser stored, not what was written: it
     // normalizes values (`0` reads back as `0px`, `0 0` as `0px 0px`).
-    const written = new Map<string, string>();
-    for (const [key, value] of Object.entries(values)) {
-      el.style.setProperty(key, value); written.set(key, el.style.getPropertyValue(key));
-    }
+    const written = new Map(keys.map(key => [key, el.style.getPropertyValue(key)]));
     return () => {
-      for (const [key, value, priority] of previous) {
+      for (const [key, value, prevPriority] of previous) {
         // Restore only values still owned by us; React may have updated a style.
-        if (el.style.getPropertyValue(key) !== written.get(key)) continue;
-        if (value) el.style.setProperty(key, value, priority);
+        if (el.style.getPropertyValue(key) !== written.get(key) || el.style.getPropertyPriority(key) !== priority) continue;
+        if (value) el.style.setProperty(key, value, prevPriority);
         else el.style.removeProperty(key);
       }
     };
@@ -501,17 +694,46 @@ function installWebMotion(): () => void {
     for (const el of all(copy, 'iframe, video, audio, input, textarea')) el.remove();
     return copy;
   }
+  function collectVisibleOccluders(selector: string): Map<Element, Rect> {
+    const boxes = new Map<Element, Rect>();
+    const add = (el: Element) => {
+      if (boxes.has(el) || el.closest('[data-native-polish-ghost]')) return;
+      const box = rect(el);
+      if (el.isConnected && box.width > 1 && box.height > 1 && box.bottom > 0 && box.top < window.innerHeight) {
+        boxes.set(el, box);
+      }
+    };
+    for (const el of all(document.body, selector)) add(el);
+    for (const closeBtn of all(document.body, '[data-testid="tool-call-sheet-close"], [data-testid="tool-call-group-sheet-close"]')) {
+      if (!visible(closeBtn)) continue;
+      add(closeBtn.parentElement?.parentElement ?? closeBtn.parentElement ?? closeBtn);
+    }
+    return boxes;
+  }
+  function occluderRectsFor(target: Element, occluders: ReadonlyMap<Element, Rect>, includeDescendants: boolean): Rect[] {
+    const boxes: Rect[] = [];
+    for (const [el, box] of occluders) {
+      if (el === target || (el.contains?.(target) ?? hasAncestor(target, [el]))) continue;
+      // Labels ignore their own child surfaces. Text reveals also clip against
+      // overlays within their owner, such as tooltips over freshly added text.
+      if (!includeDescendants && (target.contains?.(el) ?? hasAncestor(el, [target]))) continue;
+      boxes.push(box);
+    }
+    return boxes;
+  }
   function ghost(before: Snapshot, horizontal = 0, milliseconds = duration()) {
     const copy = exitCopy(before);
     const style = window.getComputedStyle(before.element);
     const r = before.box;
     const values: Record<string, string> = {
       position: 'fixed', left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`,
-      margin: '0', 'box-sizing': 'border-box', overflow: 'hidden', 'pointer-events': 'none', 'z-index': '90',
+      margin: '0', 'box-sizing': 'border-box', overflow: 'hidden', 'pointer-events': 'none', 'z-index': '0',
       color: style.getPropertyValue('color'), 'font-family': style.getPropertyValue('font-family'),
     };
     for (const [key, value] of Object.entries(values)) copy.style.setProperty(key, value, 'important');
-    document.body.appendChild(copy);
+    const overlayRoot = document.body.querySelector('#overlay-root');
+    if (overlayRoot?.parentElement === document.body) document.body.insertBefore(copy, overlayRoot);
+    else document.body.appendChild(copy);
     ghosts.add(copy);
     animate(copy, [{ opacity: 1, transform: 'translate(0,0)', clipPath: 'inset(0 0 0 0)' }, { opacity: 0, transform: `translate(${horizontal}px,-3px)`, clipPath: horizontal ? 'inset(0 0 0 0)' : 'inset(0 0 100% 0)' }], () => { copy.remove(); ghosts.delete(copy); }, 0, milliseconds);
   }
@@ -693,21 +915,143 @@ function installWebMotion(): () => void {
   function animateDisclosure(before: Disclosure) {
     const el = before.element;
     if (!visible(el)) return;
-    const children = Array.from(el.children);
+    const disclosureChat = before.chat ?? el.closest(CHAT);
+    if (disclosureChat) {
+      const chatState = chats.get(disclosureChat);
+      if (
+        disclosureChat.getAttribute('data-native-polish-hydrating') === 'true' ||
+        !chatState ||
+        Date.now() < chatState.hydrationQuietUntil
+      ) {
+        return;
+      }
+    }
+    const children = disclosureChildren(el);
+    const toggle = before.toggle?.isConnected && hasAncestor(before.toggle, [el])
+      ? before.toggle
+      : (before.isBubble ? bubbleToggleFor(el) : el.querySelector('[role="button"][aria-expanded]'));
+    const preview = before.isBubble
+      ? (before.preview?.isConnected && hasAncestor(before.preview, [el])
+        ? before.preview
+        : (toggle ? children.find(child => child !== toggle) ?? null : null))
+      : null;
+    const ariaExpanded = toggle?.getAttribute('aria-expanded');
+    const currentExpanded = before.isBubble
+      ? bubbleExpandedState(toggle, preview)
+      : (ariaExpanded === 'true' ? true : ariaExpanded === 'false' ? false : null);
+    const toggleFlipped = before.expanded !== null && before.expanded !== undefined && currentExpanded !== null && currentExpanded !== undefined && before.expanded !== currentExpanded;
+    const childrenChanged = children.length !== before.children.length || children.some((child, index) => child !== before.children[index]);
     // Streamed text, syntax highlighting and hover updates must not trigger a
-    // new expand animation. Only a change in the direct detail children does.
-    if (children.length === before.children.length && children.every((child, index) => child === before.children[index])) return;
+    // new expand animation. Only a change in direct detail children or toggle state does.
+    if (!childrenChanged && !toggleFlipped) return;
     const height = rect(el).height;
     if (Math.abs(height - before.height) < 2) return;
     active.get(el)?.();
+
+    if (before.isBubble) {
+      if (preview && before.previewHeight !== undefined) {
+        const previewHeight = rect(preview).height;
+        if (shouldAnimateChatDisclosure({
+          isBubble: true,
+          beforeExpanded: before.expanded,
+          currentExpanded,
+          beforeHeight: before.previewHeight,
+          currentHeight: previewHeight,
+        })) {
+          active.get(preview)?.();
+          if (toggle) active.get(toggle)?.();
+          const expanding = previewHeight > before.previewHeight;
+          const currentToggleMarginTop = toggle
+            ? Number.parseFloat(window.getComputedStyle(toggle).getPropertyValue('margin-top')) || 0
+            : undefined;
+          const motion = chatDisclosureMotion({
+            expanding,
+            beforeHeight: before.previewHeight,
+            currentHeight: previewHeight,
+            beforeBubbleHeight: before.height,
+            currentBubbleHeight: height,
+            beforeToggleMarginTop: before.toggleMarginTop,
+            currentToggleMarginTop,
+          });
+          const finishChatHeight = beginChatHeightAnimation(before.chat ?? el.closest(CHAT), el);
+          const restoreBubble = motion.bubbleKeyframes ? temporaryStyles(el, motion.bubbleStyles) : null;
+          const restorePreview = temporaryStyles(preview, motion.styles, motion.priority);
+          if (motion.bubbleKeyframes) {
+            animate(el, motion.bubbleKeyframes, (cancelled) => {
+              restoreBubble?.();
+              active.get(preview)?.();
+              if (toggle) active.get(toggle)?.();
+              finishChatHeight(cancelled);
+            });
+          } else {
+            const stopBubble = () => {
+              active.get(preview)?.();
+              if (toggle) active.get(toggle)?.();
+              finishChatHeight(true);
+            };
+            active.set(el, stopBubble);
+          }
+          animate(preview, motion.keyframes, (cancelled) => {
+            if (!motion.bubbleKeyframes) active.delete(el);
+            restorePreview();
+            finishChatHeight(cancelled);
+          });
+          if (toggle && motion.toggleKeyframes) {
+            animate(toggle, motion.toggleKeyframes);
+          }
+          // If the host MutationObserver jumped scrollTop in the same microtask
+          // before the bubble height animation constrained the layout, restore
+          // the pre-commit scrollTop so the host ResizeObserver / follow loop
+          // eases scrollTop smoothly with the bubble's height curve.
+          if (expanding && before.chat && before.scrollTop !== undefined && before.chat.scrollTop > before.scrollTop) {
+            before.chat.scrollTop = before.scrollTop;
+          }
+        }
+      }
+      return;
+    }
+
+    const finishChatHeight = beginChatHeightAnimation(before.chat ?? el.closest(CHAT), el);
+    const closingTool = el.matches(TOOL) && height < before.height;
+    const copies: Element[] = [];
+    const sheets: Element[] = [];
+    const restorePosition = closingTool && window.getComputedStyle(el).getPropertyValue('position') === 'static'
+      ? temporaryStyles(el, { position: 'relative' })
+      : () => {};
+    if (closingTool) {
+      for (const detail of before.details) {
+        if (detail.element.isConnected) continue;
+        const copy = exitCopy(detail);
+        const sheet = restoreUnistyles(copy, before.css ?? '');
+        if (sheet) sheets.push(sheet);
+        for (const [key, value] of Object.entries({
+          position: 'absolute', left: `${detail.left}px`, top: `${detail.top}px`,
+          width: `${detail.box.width}px`, height: `${detail.box.height}px`, margin: '0',
+          'box-sizing': 'border-box', 'pointer-events': 'none',
+        })) copy.style.setProperty(key, value, 'important');
+        el.appendChild(copy);
+        const nodes = [copy, ...all(copy, '*').slice(0, 500)];
+        for (const [index, top, left] of detail.scrolls) {
+          if (nodes[index]) { nodes[index].scrollTop = top; nodes[index].scrollLeft = left; }
+        }
+        ghosts.add(copy);
+        copies.push(copy);
+      }
+    }
     const restore = temporaryStyles(el, { overflow: 'hidden', 'box-sizing': 'border-box', 'min-height': '0' });
-    animate(el, [{ height: `${before.height}px` }, { height: `${height}px` }], restore);
+    animate(el, [{ height: `${before.height}px` }, { height: `${height}px` }], (cancelled) => {
+      for (const copy of copies) { copy.remove(); ghosts.delete(copy); }
+      for (const sheet of sheets) sheet.remove();
+      restorePosition();
+      restore();
+      finishChatHeight(cancelled);
+    });
     if (height > before.height) {
       for (const detail of children.slice(1)) {
         if (before.children.includes(detail)) continue;
         animate(detail, [{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'translateY(0)' }]);
       }
-    } else for (const detail of before.details) if (!detail.element.isConnected) ghost(detail);
+    } else if (!closingTool) for (const detail of before.details) if (!detail.element.isConnected) ghost(detail);
   }
   function animateTree(before: Tree, after: Tree | null) {
     if (!after || after.element !== before.element) return;
@@ -749,8 +1093,8 @@ function installWebMotion(): () => void {
   }
 
   // Persistent observation adds motion to async updates (new tabs/messages and
-  // status changes) without relying on a click being in progress. No content
-  // text is compared, and message DOM is never cloned.
+  // status changes) without relying on a click being in progress. Tool text is
+  // compared only in memory to detect appended content; it never leaves the client.
   interface TabState { chip: Element; shot: Snapshot; left: number }
   let tabRows = new Map<Element, Map<string, TabState>>();
   interface WorkspaceAnchor { shot: Snapshot; top: number; left: number; project: string | null }
@@ -782,10 +1126,85 @@ function installWebMotion(): () => void {
   let paneTransitionUntil = 0;
   let fileIcons = new Map<Element, string>();
   let toolIcons = new Map<Element, string>();
-  let toolStates = new Map<Element, boolean>();
+  let toolShimmers = new Map<Element, ToolDetailShimmerState>();
+  let toolLabels = new Map<Element, ToolLabelState>();
+  let toolGroupItems = new Map<Element, Set<Element>>();
+  const seenToolSummaries = new WeakMap<Element, { contextKey: string; rows: Set<string> }>();
   let agentStates = new Map<Element, string>();
   const tabSettling = new WeakMap<Element, number>();
-  const chats = new WeakMap<Element, { seen: Set<string>; pending: Set<string>; running: boolean }>();
+  interface ChatState {
+    contextKey: string;
+    rowIds: Set<string>;
+    seen: Set<string>;
+    seenUserMessages: Set<string>;
+    seenCompactions: Set<string>;
+    seenWorkedFooters: Set<string>;
+    pending: Set<string>;
+    running: boolean;
+    completedFooterPendingUntil: number;
+    scrollTop: number;
+    compensatedScrollTop: number;
+    pendingBottomUntil: number;
+    userScrolledUp: boolean;
+    maxScrollTop: number;
+    scrollHeight: number;
+    clientHeight: number;
+    clientWidth: number;
+    footer: Element | null;
+    footerTop: number | null;
+    stream: StreamRowState | null;
+    handoff: (StreamRowState & { expires: number }) | null;
+    handoffQuietUntil: number;
+    hydrationQuietUntil: number;
+    reflowQuietUntil: number;
+    textSignature: string;
+  }
+  interface StreamRowState { id: string; index: number; text: string }
+  interface ContentRise { start(distance: number): void; prepare(distance: number): void; cancel(): void; getOffset(): number }
+  interface ChatHeightAnimationToken { element: Element }
+  const chats = new WeakMap<Element, ChatState>();
+  const chatQuestions = new WeakMap<Element, { contextKey: string; present: boolean; resolutionUntil: number; answerUntil: number; submitUntil: number; localAnswerRowId: string | null }>();
+  let visibleChats = new Set<Element>();
+  const hydrationTimers = new Map<Element, number>();
+  const seenWorkedFooterNodes = new WeakSet<Element>();
+  const chatDisclosureQuietUntil = new WeakMap<Element, number>();
+  const chatHeightAnimations = new WeakMap<Element, Set<ChatHeightAnimationToken>>();
+  const timelineRises = new WeakMap<Element, ContentRise>();
+  const footerRises = new WeakMap<Element, ContentRise>();
+  const toolDetailRises = new WeakMap<Element, ContentRise>();
+  const contentRises = new Set<ContentRise>();
+  const chatImageSeen = new WeakMap<Element, { contextKey: string; rows: Map<string, Set<number>> }>();
+  const chatImageRecentRows = new WeakMap<Element, Map<string, number>>();
+  const imagePlaceholders = new Map<Element, () => void>();
+  interface ToolDetailTextState {
+    text: string;
+    owner: Element;
+    box: Element;
+    committedHeight: number;
+    contentHeight: number;
+  }
+  interface ToolDetailReveal {
+    owner: Element;
+    clipBoxes: Element[];
+    startOffset: number;
+    endOffset: number;
+    backdropFrames: Record<string, string | number>[];
+    durationMs: number;
+    root: Element;
+    blurLayer: Element;
+    tintLayer: Element;
+    blurCovers: Element[];
+    tintCovers: Element[];
+    restoreHost: () => void;
+  }
+  let toolDetailText = new Map<Element, ToolDetailTextState>();
+  const toolDetailHeightTweens = new WeakMap<Element, {
+    scrollBox: Element | null;
+    measureNaturalHeight: () => number;
+  }>();
+  const toolDetailReveals = new Set<ToolDetailReveal>();
+  const revealHostPositions = new WeakMap<Element, { count: number; restore: () => void }>();
+  let revealFrame = 0;
   const decorations = new Map<Element, () => void>();
   type Region = 'controls' | 'workspaces' | 'tabs' | 'floating' | 'panes' | 'agents' | 'files' | 'tools' | 'messages' | 'elastic';
   const regions: Region[] = ['controls', 'workspaces', 'tabs', 'floating', 'panes', 'agents', 'files', 'tools', 'messages', 'elastic'];
@@ -820,11 +1239,91 @@ function installWebMotion(): () => void {
     body[data-native-polish-states="true"] :is(${TAB},[data-testid^="sidebar-workspace-"]) :is(svg,path,circle) {
       transition: color 150ms,stroke 150ms,fill 150ms;
     }
+    [data-window-content="true"], ${CHAT} {
+      position: relative;
+      z-index: 0;
+      isolation: isolate;
+    }
+    body[data-native-polish-motion="true"] ${CHAT_TIMELINE} {
+      will-change: transform;
+    }
+    @keyframes paseo-toolcall-shimmer {
+      0% { background-position: var(--paseo-shimmer-start, -200px) 0; }
+      100% { background-position: var(--paseo-shimmer-end, 200px) 0; }
+    }
+    body[data-native-polish-timeline="true"] [data-native-polish-tool-label] {
+      width: auto !important;
+      overflow: visible !important;
+    }
+    body[data-native-polish-timeline="true"] [data-native-polish-shimmer-parent] {
+      position: relative !important;
+      overflow: hidden !important;
+      isolation: isolate;
+      z-index: 0;
+    }
+    body[data-native-polish-timeline="true"] :is(${TOOL}) [style*="--paseo-shimmer"] {
+      opacity: 0 !important;
+    }
+    [data-native-polish-shimmer-overlay] {
+      display: none;
+    }
+    body[data-native-polish-timeline="true"] [data-native-polish-shimmer-overlay] {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      overflow: hidden;
+      pointer-events: none;
+    }
+    body[data-native-polish-timeline="true"] [data-native-polish-shimmer-text] {
+      color: transparent !important;
+      -webkit-text-fill-color: transparent !important;
+      background-image: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.45) 24%, #ffffff 40%, #ffffff 60%, rgba(255, 255, 255, 0.45) 76%, rgba(255, 255, 255, 0) 100%) !important;
+      background-size: ${TOOL_SHIMMER_PEAK_WIDTH_PX}px 100% !important;
+      background-repeat: no-repeat !important;
+      background-clip: text !important;
+      -webkit-background-clip: text !important;
+      white-space: nowrap !important;
+      animation-name: paseo-toolcall-shimmer !important;
+      animation-duration: ${TOOL_SHIMMER_DURATION_MS}ms !important;
+      animation-timing-function: linear !important;
+      animation-iteration-count: infinite !important;
+      animation-delay: var(--native-polish-shimmer-delay, 0ms) !important;
+      --paseo-shimmer-start: var(--native-polish-shimmer-start, ${TOOL_SHIMMER_TRACK_START_PX}px) !important;
+      --paseo-shimmer-end: var(--native-polish-shimmer-end, ${TOOL_SHIMMER_TRACK_END_PX}px) !important;
+    }
+    body[data-native-polish-timeline="true"] [data-native-polish-shimmer-text="primary"] {
+      flex-shrink: 0;
+    }
+    body[data-native-polish-timeline="true"] [data-native-polish-shimmer-text="secondary"] {
+      flex-shrink: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    /* A transformed assistant is temporarily a plugin stream item, so core
+       assigns the default 16px inter-item gap. Offset only that difference;
+       when core resumes rendering, both the plugin node and correction leave
+       together and the text keeps the same screen position. */
+    [data-testid="native-polish-streaming-assistant"][data-native-polish-gap-above="user"] { margin-top: -16px; }
+    [data-testid="native-polish-streaming-assistant"][data-native-polish-gap-above="tool"] { margin-top: -12px; }
+    [data-testid="native-polish-streaming-assistant"][data-native-polish-gap-below="default"] { padding-bottom: 12px; }
+    ${CHAT}[data-native-polish-hydrating="true"],
+    ${CHAT}[data-native-polish-hydrating="true"] * {
+      transition: none !important;
+    }
   `;
   document.head.appendChild(stylesheet);
+  function clearLegacyPrecondense() {
+    for (const node of all(document.body, '[data-native-polish-precondense-fade="true"][data-native-polish-ghost], [data-native-polish-precondense-toggle="true"][data-native-polish-ghost]')) node.remove();
+    for (const preview of all(document.body, '[data-native-polish-precondense-preview="true"]')) preview.removeAttribute('data-native-polish-precondense-preview');
+  }
+  clearLegacyPrecondense();
   function updateMotionFlags() {
     const preferences = getPreferences();
-    for (const key of ['controls', 'tabs', 'trees', 'states'] as const) document.body.setAttribute(`data-native-polish-${key}`, String(canAnimate() && preferences[key]));
+    for (const key of ['controls', 'tabs', 'trees', 'states', 'timeline'] as const) document.body.setAttribute(`data-native-polish-${key}`, String(canAnimate() && preferences[key]));
     document.body.setAttribute('data-native-polish-motion', String(canAnimate()));
   }
   function decorate(el: Element, attribute: string) {
@@ -862,6 +1361,7 @@ function installWebMotion(): () => void {
   function releaseRowClip(from: Element, row: Element): () => void {
     const restores: (() => void)[] = [];
     for (let at: Element | null = from; at && at !== row; at = at.parentElement) {
+      if (at.getAttribute('data-native-polish-shimmer-parent') !== null || at.getAttribute('data-native-polish-shimmer-overlay') !== null) continue;
       const style = window.getComputedStyle(at);
       const clipped = /^(hidden|clip)$/.test(style.getPropertyValue('overflow-y') || style.getPropertyValue('overflow'));
       if (clipped || at.style.getPropertyValue('height')) restores.push(temporaryStyles(at, { overflow: 'visible', height: 'auto', 'max-height': 'none' }));
@@ -1229,11 +1729,13 @@ function installWebMotion(): () => void {
   // Paseo owns the actual workspace-name node. During a rename we hide only
   // that leaf (retaining its layout and the host row's real background), then
   // temporarily draw the old/new title above it.
-  function paintTitleCover(overlay: Element, node: Element) {
+  function paintTitleCover(overlay: Element, node: Element, host: Element) {
     const r = rect(node);
+    const hostRect = host === document.body ? { left: 0, top: 0 } : rect(host);
     const style = window.getComputedStyle(node);
     const values: Record<string, string> = {
-      position: 'fixed', left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`,
+      position: host === document.body ? 'fixed' : 'absolute',
+      left: `${r.left - hostRect.left}px`, top: `${r.top - hostRect.top}px`, width: `${r.width}px`, height: `${r.height}px`,
       display: 'block', margin: '0', padding: '0', 'box-sizing': 'border-box', overflow: 'hidden', 'pointer-events': 'none', 'z-index': '1',
       'background-color': 'transparent', color: style.getPropertyValue('color'),
       'font-family': style.getPropertyValue('font-family'), 'font-size': style.getPropertyValue('font-size'),
@@ -1247,13 +1749,24 @@ function installWebMotion(): () => void {
     for (const [property, value] of Object.entries(values)) overlay.style.setProperty(property, value, 'important');
   }
   function titleRevealCover(node: Element): TitleCover {
+    const host = node.closest(WORKSPACE_ROW) ?? node.parentElement ?? document.body;
+    const restoreHost =
+      host !== document.body && window.getComputedStyle(host).getPropertyValue('position') === 'static'
+        ? temporaryStyles(host, { position: 'relative' })
+        : () => {};
     const overlay = document.createElement('div');
     overlay.setAttribute('data-native-polish-reveal', '');
     overlay.setAttribute('aria-hidden', 'true');
-    paintTitleCover(overlay, node);
-    const restoreNode = temporaryStyles(node, { visibility: 'hidden' });
-    document.body.appendChild(overlay);
-    return { overlay, restoreNode };
+    paintTitleCover(overlay, node, host);
+    const restoreHidden = temporaryStyles(node, { visibility: 'hidden' });
+    host.appendChild(overlay);
+    return {
+      overlay,
+      restoreNode: () => {
+        restoreHidden();
+        restoreHost();
+      },
+    };
   }
   function removeTitleCovers() {
     for (const state of Array.from(titleReveals.values())) state.stop();
@@ -1495,12 +2008,26 @@ function installWebMotion(): () => void {
     }
     agentStates = nextAgents;
   }
-  function updateIcons(slots: Element[], old: Map<Element, string>, allow: boolean) {
+  function updateIcons(
+    slots: Element[],
+    old: Map<Element, string>,
+    allow: boolean,
+    canAnimateSlot?: (slot: Element) => boolean,
+  ) {
     const next = new Map<Element, string>();
     for (const slot of slots) {
       const signature = iconSignature(slot);
       next.set(slot, signature);
-      if (allow && getPreferences().states && old.has(slot) && old.get(slot) !== signature && !active.has(slot)) animate(slot, [{ opacity: .2, scale: .9 }, { opacity: 1, scale: 1 }], undefined, 0, 150);
+      if (
+        allow &&
+        (!canAnimateSlot || canAnimateSlot(slot)) &&
+        getPreferences().states &&
+        old.has(slot) &&
+        old.get(slot) !== signature &&
+        !active.has(slot)
+      ) {
+        animate(slot, [{ opacity: .2, scale: .9 }, { opacity: 1, scale: 1 }], undefined, 0, 150);
+      }
     }
     return next;
   }
@@ -1513,52 +2040,1771 @@ function installWebMotion(): () => void {
     }
     fileIcons = updateIcons(slots, fileIcons, allow);
   }
+  function deepestTextElement(el: Element): Element {
+    let current = el;
+    while (current.children.length > 0) {
+      const next = Array.from(current.children).find((child) => (child.textContent ?? '').length > 0);
+      if (!next) break;
+      current = next;
+    }
+    return current;
+  }
+  function syncShimmerTypography(target: Element, source: Element | null, marginSource?: Element | null) {
+    if (!source) return;
+    const computed = window.getComputedStyle(deepestTextElement(source));
+    for (const prop of ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing'] as const) {
+      const val = computed.getPropertyValue(prop);
+      if (val && target.style.getPropertyValue(prop) !== val) target.style.setProperty(prop, val);
+    }
+    if (marginSource) {
+      const marginLeft = window.getComputedStyle(marginSource).getPropertyValue('margin-left');
+      if (marginLeft && target.style.getPropertyValue('margin-left') !== marginLeft) {
+        target.style.setProperty('margin-left', marginLeft);
+      }
+    }
+  }
+  function applyShimmerVars(
+    shimmer: Element,
+    offsetX: number,
+    now: number,
+    nextShimmers: Map<Element, ToolDetailShimmerState>,
+    trackEndPx: number,
+  ) {
+    const previous = toolShimmers.get(shimmer);
+    const next = toolDetailShimmerStyle({ offsetX, now, previous, trackEndPx });
+    nextShimmers.set(shimmer, next);
+    if (!previous || previous.delayMs !== next.delayMs) {
+      shimmer.style.setProperty('--native-polish-shimmer-delay', `${next.delayMs}ms`);
+    }
+    if (!previous || previous.startPx !== next.startPx) {
+      shimmer.style.setProperty('--native-polish-shimmer-start', `${next.startPx}px`);
+    }
+    if (!previous || previous.endPx !== next.endPx) {
+      shimmer.style.setProperty('--native-polish-shimmer-end', `${next.endPx}px`);
+    }
+  }
   function updateToolStates(allow: boolean) {
-    const nextTools = new Map<Element, boolean>();
+    const nextShimmers = new Map<Element, ToolDetailShimmerState>();
+    const nextLabels = new Map<Element, ToolLabelState>();
+    const nextGroupItems = new Map<Element, Set<Element>>();
+    const chatTailState = new Map<Element, { isTurnRunning: boolean; lastRow: Element | null; lastStreamItem: Element | null }>();
+    const getChatTailState = (chat: Element) => {
+      let state = chatTailState.get(chat);
+      if (!state) {
+        const rows = all(chat, HISTORY_ROW);
+        const streamItems = all(chat, '[data-testid="stream-item"]');
+        state = {
+          isTurnRunning: Boolean(chat.querySelector('[data-testid="turn-working-indicator"]')),
+          lastRow: rows.length > 0 ? rows[rows.length - 1] : null,
+          lastStreamItem: streamItems.length > 0 ? streamItems[streamItems.length - 1] : null,
+        };
+        chatTailState.set(chat, state);
+      }
+      return state;
+    };
     const slots: Element[] = [];
-    for (const tool of live(TOOL).slice(0, 80)) {
+    const hydratingSlots = new Set<Element>();
+    const now = Date.now();
+    let modalOccluders: Map<Element, Rect> | undefined;
+    for (const tool of live(TOOL).slice(-80)) {
       const header = firstBoxChild(tool);
       if (!header) continue;
-      const running = Boolean(header.querySelector('[style*="--paseo-shimmer"]'));
-      nextTools.set(header, running);
-      if (allow && getPreferences().states && toolStates.has(header) && toolStates.get(header) !== running && !active.has(header)) animate(header, [{ opacity: .65 }, { opacity: 1 }], undefined, 0, 150);
       const row = firstBoxChild(header);
+      const labelRow = row ? Array.from(row.children)[1] : null;
+      const labelChildren = labelRow ? Array.from(labelRow.children) : [];
+      const primary = labelChildren.find((child) => !child.matches('[data-native-polish-shimmer-overlay]')) ?? null;
+      if (primary) decorate(primary, 'data-native-polish-tool-label');
+      const toolChat = tool.closest(CHAT);
+      const toolChatState = toolChat ? chats.get(toolChat) : undefined;
+      const toolChatHydrating = Boolean(
+        toolChat &&
+          (toolChat.getAttribute('data-native-polish-hydrating') === 'true' ||
+            !toolChatState ||
+            now < toolChatState.hydrationQuietUntil),
+      );
+      if (labelRow) {
+        const secondary = labelChildren.find((child) =>
+          child !== primary
+          && !child.matches('[role="button"],button,[data-testid="tool-call-summary-placeholder"],[data-native-polish-shimmer-overlay]')
+          && window.getComputedStyle(child).getPropertyValue('position') !== 'absolute'
+        ) ?? null;
+        const isTopLevelTool = !tool.parentElement?.closest(TOOL);
+        const isToolGroup = tool.matches('[data-testid="tool-call-group"]');
+        const toolRow = tool.closest(HISTORY_ROW);
+        const labelKey = (isTopLevelTool ? toolRow : null) ?? labelRow;
+        const current: ToolLabelState = {
+          primary: primary?.textContent ?? '',
+          secondary: secondary?.textContent ?? '',
+        };
+        nextLabels.set(labelKey, current);
+        const tail = toolChat ? getChatTailState(toolChat) : null;
+        const toolStreamItem = tool.closest('[data-testid="stream-item"]');
+        const isLastTimelineItem = Boolean(
+          tail
+          && toolRow
+          && tail.lastRow === toolRow
+          && (!toolStreamItem || tail.lastStreamItem === toolStreamItem)
+        );
+        let summaryEntering = false;
+        const summaryRowId = toolRow?.getAttribute('data-history-row-id');
+        if (toolChat && toolChatState && isTopLevelTool && isToolGroup && summaryRowId && current.primary) {
+          let seen = seenToolSummaries.get(toolChat);
+          if (!seen || seen.contextKey !== toolChatState.contextKey) {
+            seen = { contextKey: toolChatState.contextKey, rows: new Set() };
+            seenToolSummaries.set(toolChat, seen);
+          }
+          const isNewSummary = !seen.rows.has(summaryRowId);
+          seen.rows.add(summaryRowId);
+          while (seen.rows.size > 5000) seen.rows.delete(seen.rows.values().next().value!);
+          summaryEntering = Boolean(
+            isNewSummary && allow && !toolChatHydrating && getPreferences().timeline &&
+            tail?.isTurnRunning && isLastTimelineItem && Date.now() >= quietUntil &&
+            toolRow && !active.has(toolRow),
+          );
+          if (summaryEntering) animate(tool, TOOL_LABEL_UPDATE_FRAMES, undefined, 0, TOOL_LABEL_UPDATE_DURATION_MS);
+        }
+        const hasHostShimmer = all(header, '[style*="--paseo-shimmer"]').length > 0;
+        const hasPlaceholder = Boolean(header.querySelector('[data-testid="tool-call-summary-placeholder"]'));
+        const shouldShimmer =
+          canAnimate()
+          && !toolChatHydrating
+          && getPreferences().timeline
+          && Boolean(current.primary)
+          && shouldKeepToolShimmerActive({
+            hasHostShimmer,
+            hasPlaceholder,
+            isToolGroup,
+            isTopLevelTool,
+            isTurnRunning: Boolean(tail?.isTurnRunning),
+            isLastTimelineItem,
+          })
+          && !isRectOccluded(
+            rect(labelRow),
+            occluderRectsFor(labelRow, modalOccluders ??= collectVisibleOccluders(MODAL_OCCLUDER), false),
+          );
+        let overlay = labelRow.querySelector('[data-native-polish-shimmer-overlay]');
+        let primaryShimmer: Element | null = null;
+        let secondaryShimmer: Element | null = null;
+        if (shouldShimmer) {
+          decorate(labelRow, 'data-native-polish-shimmer-parent');
+          if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.setAttribute('data-native-polish-shimmer-overlay', 'true');
+            overlay.setAttribute('aria-hidden', 'true');
+            const pSpan = document.createElement('span');
+            pSpan.setAttribute('data-native-polish-shimmer-text', 'primary');
+            const sSpan = document.createElement('span');
+            sSpan.setAttribute('data-native-polish-shimmer-text', 'secondary');
+            overlay.appendChild(pSpan);
+            overlay.appendChild(sSpan);
+            labelRow.appendChild(overlay);
+            const createdOverlay = overlay;
+            decorations.set(createdOverlay, () => createdOverlay.remove());
+          }
+          primaryShimmer = overlay.children[0] ?? null;
+          secondaryShimmer = overlay.children[1] ?? null;
+          const openFileBtn = labelRow.querySelector('[data-testid="tool-call-open-file"]');
+          const padRightPx = openFileBtn ? Math.round(rect(openFileBtn).width + 4) : 0;
+          const padRight = `${padRightPx}px`;
+          if (overlay.style.getPropertyValue('padding-right') !== padRight) {
+            overlay.style.setProperty('padding-right', padRight);
+          }
+          const trackEndPx = Math.max(0, Math.round(rect(labelRow).width - padRightPx));
+          if (primaryShimmer) {
+            syncShimmerTypography(primaryShimmer, primary);
+            if (primaryShimmer.textContent !== current.primary) primaryShimmer.textContent = current.primary;
+            applyShimmerVars(primaryShimmer, 0, now, nextShimmers, trackEndPx);
+          }
+          if (secondaryShimmer) {
+            syncShimmerTypography(secondaryShimmer, secondary ?? primary, secondary);
+            if (secondaryShimmer.textContent !== current.secondary) secondaryShimmer.textContent = current.secondary;
+            const offsetX =
+              secondary && current.secondary
+                ? Math.max(0, rect(secondary).left - rect(labelRow).left)
+                : 0;
+            applyShimmerVars(secondaryShimmer, offsetX, now, nextShimmers, trackEndPx);
+          }
+        } else if (overlay) {
+          for (const child of Array.from(overlay.children)) active.get(child)?.();
+          active.get(overlay)?.();
+          overlay.remove();
+          decorations.delete(overlay);
+          labelRow.removeAttribute('data-native-polish-shimmer-parent');
+          decorations.delete(labelRow);
+        }
+        if (allow && !summaryEntering && !toolChatHydrating && getPreferences().timeline) {
+          const transition = toolLabelUpdateTransition(toolLabels.get(labelKey), current);
+          if (transition?.animatePrimary && primary) {
+            animate(primary, transition.frames, undefined, 0, transition.durationMs);
+            if (primaryShimmer) animate(primaryShimmer, transition.shimmerFrames, undefined, 0, transition.durationMs);
+          }
+          if (transition?.animateSecondary && secondary) {
+            animate(secondary, transition.frames, undefined, 0, transition.durationMs);
+            if (secondaryShimmer) animate(secondaryShimmer, transition.shimmerFrames, undefined, 0, transition.durationMs);
+          }
+        }
+        if (isToolGroup) {
+          const toggle = header.matches('[aria-expanded]') ? header : header.querySelector('[aria-expanded]');
+          const isExpanded = toggle ? toggle.getAttribute('aria-expanded') === 'true' : tool.children.length > 1;
+          const groupItems = isExpanded
+            ? all(tool, TOOL_GROUP_ITEM).filter((item) => item.parentElement?.closest(TOOL) === tool && visible(item))
+            : [];
+          if (groupItems.length > 0) {
+            const groupKey = toolRow ?? tool;
+            const previousItems = toolGroupItems.get(groupKey);
+            nextGroupItems.set(groupKey, new Set(groupItems));
+            if (allow && !toolChatHydrating && getPreferences().timeline) {
+              for (const entering of findEnteringToolGroupItems(previousItems, groupItems)) {
+                animate(entering, TOOL_LABEL_UPDATE_FRAMES, undefined, 0, TOOL_LABEL_UPDATE_DURATION_MS);
+              }
+            }
+          }
+        }
+      }
       const slot = row ? firstBoxChild(row) : null;
-      if (slot && !Array.from(slot.querySelectorAll('svg')).some(chevron)) slots.push(slot);
+      if (slot && !Array.from(slot.querySelectorAll('svg')).some(chevron)) {
+        slots.push(slot);
+        if (toolChatHydrating) hydratingSlots.add(slot);
+      }
     }
-    toolIcons = updateIcons(slots, toolIcons, allow);
-    toolStates = nextTools;
+    toolIcons = updateIcons(slots, toolIcons, allow, (slot) => !hydratingSlots.has(slot));
+    toolShimmers = nextShimmers;
+    toolLabels = nextLabels;
+    toolGroupItems = nextGroupItems;
+  }
+  function createContentRise(element: Element, clipOverflow = false): ContentRise {
+    let offset = 0;
+    let animationFrame = 0;
+    let lastFrameTime: number | null = null;
+    let restoreParentClip: (() => void) | null = null;
+    let previousTransform: { value: string; priority: string } | undefined;
+    let writtenTransform: string | undefined;
+    const applyOffset = (next: number) => {
+      offset = next;
+      const value = element.style.getPropertyValue('transform');
+      const priority = element.style.getPropertyPriority('transform');
+      const ownsTransform = value === writtenTransform && priority === '';
+      if (next === 0) {
+        if (ownsTransform && previousTransform) {
+          if (previousTransform.value) element.style.setProperty('transform', previousTransform.value, previousTransform.priority);
+          else element.style.removeProperty('transform');
+        }
+        previousTransform = undefined;
+        writtenTransform = undefined;
+        restoreParentClip?.();
+        restoreParentClip = null;
+      } else {
+        // Both tagged timelines and Paseo's untagged row parent can extend
+        // the chat's scrollHeight when translated past the end of the content.
+        if (clipOverflow && !restoreParentClip && element.parentElement) {
+          const parent = element.parentElement;
+          const parentStyle = window.getComputedStyle(parent);
+          const overflowY = (parentStyle.getPropertyValue('overflow-y') || parentStyle.getPropertyValue('overflow')).trim();
+          if (!/^(hidden|clip|auto|scroll)$/.test(overflowY)) {
+            restoreParentClip = temporaryStyles(parent, { 'overflow-y': 'clip' });
+          }
+        }
+        if (!ownsTransform) previousTransform = { value, priority };
+        element.style.setProperty('transform', `translateY(${next}px)`);
+        writtenTransform = element.style.getPropertyValue('transform');
+      }
+      if (!element.isConnected) return;
+      if (toolDetailReveals.size > 0) {
+        for (const reveal of Array.from(toolDetailReveals)) {
+          if (!syncToolDetailReveal(reveal)) active.get(reveal.tintLayer)?.();
+        }
+      }
+    };
+    const step = (timestamp: number) => {
+      if (!element.isConnected) {
+        animationFrame = 0;
+        lastFrameTime = null;
+        applyOffset(0);
+        contentRises.delete(rise);
+        return;
+      }
+      const delta = lastFrameTime === null ? 0 : timestamp - lastFrameTime;
+      lastFrameTime = timestamp;
+      const next = offset * Math.exp(-delta / 110);
+      if (Math.abs(next) < .5) {
+        animationFrame = 0;
+        lastFrameTime = null;
+        applyOffset(0);
+        contentRises.delete(rise);
+        return;
+      }
+      applyOffset(next);
+      animationFrame = window.requestAnimationFrame(step);
+    };
+    const rise: ContentRise = {
+      start(distance) {
+        // Retarget the running decay instead of restarting a fixed-duration
+        // easing for every line. This is the reference stream's chunked feel.
+        if (!element.isConnected || Math.abs(distance) <= .5 || !canAnimate() || !getPreferences().messages) return;
+        contentRises.add(rise);
+        applyOffset(offset + distance);
+        if (!animationFrame) animationFrame = window.requestAnimationFrame(step);
+      },
+      prepare(distance) {
+        if (!element.isConnected || Math.abs(distance) <= .5 || !canAnimate() || !getPreferences().messages) return;
+        // The host follow-output frame is already queued when the mutation is
+        // observed. Hold the inverse intact through that frame when starting
+        // from rest, or accumulate onto the already-running decay without
+        // resetting lastFrameTime so back-to-back stream chunks never freeze.
+        contentRises.add(rise);
+        applyOffset(offset + distance);
+        if (!animationFrame) {
+          lastFrameTime = null;
+          animationFrame = window.requestAnimationFrame(step);
+        }
+      },
+      cancel() {
+        if (animationFrame) window.cancelAnimationFrame(animationFrame);
+        animationFrame = 0;
+        lastFrameTime = null;
+        applyOffset(0);
+        contentRises.delete(rise);
+      },
+      getOffset() { return offset; },
+    };
+    return rise;
+  }
+  function riseFor(cache: WeakMap<Element, ContentRise>, element: Element | null): ContentRise | null {
+    if (!element) return null;
+    const existing = cache.get(element);
+    if (existing) return existing;
+    const created = createContentRise(element, cache === timelineRises);
+    cache.set(element, created);
+    return created;
+  }
+  function timelineFor(chat: Element, rows: Element[]): Element | null {
+    return chat.querySelector(CHAT_TIMELINE) ?? rows[0]?.parentElement ?? null;
+  }
+  function footerFor(chat: Element): Element | null {
+    const timeline = chat.querySelector(CHAT_TIMELINE);
+    const content =
+      chat.querySelector(CHAT_CONTENT)
+      ?? timeline?.parentElement
+      ?? firstBoxChild(chat);
+    const indicator = chat.querySelector('[data-testid="turn-working-indicator"]');
+    const tagged =
+      all(chat, '[data-testid="turn-footer-entry-motion"]').find(
+        (el) => !el.closest(HISTORY_ROW),
+      ) ?? null;
+    let candidate: Element | null = indicator ?? tagged;
+    if (!candidate && content) {
+      const children = Array.from(content.children);
+      const timelineIndex = children.findIndex(
+        (child) =>
+          child === timeline ||
+          Boolean(timeline && hasAncestor(timeline, [child])) ||
+          child.matches(HISTORY_ROW) ||
+          Boolean(child.querySelector(HISTORY_ROW)),
+      );
+      if (timelineIndex >= 0) {
+        candidate =
+          children.slice(timelineIndex + 1).find(
+            (child) =>
+              !child.matches('[data-testid="older-history-slot"]') &&
+              child.getAttribute('data-native-polish-ghost') === null &&
+              !child.matches(HISTORY_ROW) &&
+              !child.querySelector(HISTORY_ROW),
+          ) ?? null;
+      }
+    }
+    if (!candidate) return null;
+    // Current core keeps live auxiliary rows in a dedicated sibling after the
+    // clipped timeline. Older 0.11 hosts put the indicator directly in the
+    // content node, where its parent also owns the timeline.
+    const parent = candidate.parentElement;
+    return parent &&
+      content &&
+      parent.parentElement === content &&
+      !parent.querySelector(CHAT_TIMELINE) &&
+      !parent.querySelector(HISTORY_ROW)
+      ? parent
+      : candidate;
+  }
+  function smallestTextElement(root: Element, prefix: string): Element | null {
+    const matches = [root, ...all(root, '*')].filter((element) =>
+      (element.textContent?.trim() ?? '').startsWith(prefix),
+    );
+    return matches.find((element) => !Array.from(element.children).some((child) =>
+      (child.textContent?.trim() ?? '').startsWith(prefix),
+    )) ?? null;
+  }
+  function beginChatHeightAnimation(chat: Element | null, element: Element, durationMs = duration()): (cancelled?: boolean) => void {
+    if (!chat) return () => {};
+    let set = chatHeightAnimations.get(chat);
+    if (!set) {
+      set = new Set();
+      chatHeightAnimations.set(chat, set);
+    }
+    const token: ChatHeightAnimationToken = { element };
+    set.add(token);
+    chatDisclosureQuietUntil.set(
+      chat,
+      Math.max(chatDisclosureQuietUntil.get(chat) ?? 0, Date.now() + durationMs + 60),
+    );
+    let done = false;
+    return (cancelled = false) => {
+      if (done) return;
+      done = true;
+      set?.delete(token);
+      if (cancelled) return;
+      const state = chats.get(chat);
+      if ((!set || set.size === 0) && chat.isConnected) {
+        chatDisclosureQuietUntil.delete(chat);
+        if (state) {
+          const footer = footerFor(chat);
+          const footerRise = footer ? riseFor(footerRises, footer) : null;
+          const nextMaxScrollTop = Math.max(0, chat.scrollHeight - chat.clientHeight);
+          const preservePendingBottom =
+            Date.now() < state.pendingBottomUntil && state.compensatedScrollTop > chat.scrollTop + 0.5;
+          state.scrollTop = chat.scrollTop;
+          state.compensatedScrollTop = preservePendingBottom
+            ? Math.max(state.compensatedScrollTop, nextMaxScrollTop)
+            : chat.scrollTop;
+          state.maxScrollTop = nextMaxScrollTop;
+          state.scrollHeight = chat.scrollHeight;
+          state.clientHeight = chat.clientHeight;
+          state.footer = footer;
+          state.footerTop = footer ? rect(footer).top - (footerRise?.getOffset() ?? 0) : null;
+        }
+      }
+    };
+  }
+  function findToolDetailScrollBox(owner: Element): Element | null {
+    const ownerTool = owner.closest(TOOL);
+    for (const candidate of [owner, ...all(owner, '*')]) {
+      if (ownerTool && candidate.closest(TOOL) !== ownerTool) continue;
+      const style = window.getComputedStyle(candidate);
+      const overflowY = (style.getPropertyValue('overflow-y') || style.getPropertyValue('overflow')).trim();
+      const maxHeight = parseFloat(style.getPropertyValue('max-height'));
+      if (/^(auto|scroll)$/.test(overflowY)) return candidate;
+      if (Number.isFinite(maxHeight) && maxHeight > 0 && /^(hidden|clip)$/.test(overflowY)) return candidate;
+    }
+    return null;
+  }
+  function measureToolDetailLayout(owner: Element, text: string, previous: ToolDetailTextState | undefined): {
+    scrollBox: Element | null;
+    scrollContent: Element | null;
+    box: Element;
+    naturalHeight: number;
+    inFlightHeight: number | null;
+    contentHeight: number;
+    maxHeight: number;
+  } {
+    const previousBox = previous?.owner === owner ? previous.box : null;
+    const previousTween = previousBox && (previousBox === owner || owner.contains?.(previousBox))
+      ? toolDetailHeightTweens.get(previousBox)
+      : undefined;
+    // An active clip can hide the host's scroll box from overflow detection.
+    const scrollBox = previousTween ? previousTween.scrollBox : findToolDetailScrollBox(owner);
+    const scrollContent = scrollBox ? firstBoxChild(scrollBox) : null;
+    const box = scrollBox ?? owner;
+    const currentBoxHeight = rect(box).height;
+    const tween = toolDetailHeightTweens.get(box);
+    const inFlightHeight = tween ? currentBoxHeight : null;
+    const style = window.getComputedStyle(box);
+    const maxHeight = parseFloat(style.getPropertyValue('max-height'));
+    const hasMaxHeight = Number.isFinite(maxHeight) && maxHeight > 0;
+    const contentHeight = scrollContent ? rect(scrollContent).height : null;
+    let naturalHeight = currentBoxHeight;
+    if (scrollBox && contentHeight !== null && tween) {
+      const extras =
+        (parseFloat(style.getPropertyValue('border-top-width')) || 0) +
+        (parseFloat(style.getPropertyValue('border-bottom-width')) || 0) +
+        (parseFloat(style.getPropertyValue('padding-top')) || 0) +
+        (parseFloat(style.getPropertyValue('padding-bottom')) || 0);
+      const unclipped = contentHeight + extras;
+      naturalHeight = hasMaxHeight ? Math.min(maxHeight, unclipped) : unclipped;
+    } else if (tween) {
+      naturalHeight = previous?.box === box && previous.text === text
+        ? previous.committedHeight
+        : tween.measureNaturalHeight();
+    }
+    return {
+      scrollBox,
+      scrollContent,
+      box,
+      naturalHeight,
+      inFlightHeight,
+      contentHeight: contentHeight ?? naturalHeight,
+      maxHeight: hasMaxHeight ? maxHeight : Infinity,
+    };
+  }
+  function syncToolDetailReveal(reveal: ToolDetailReveal): boolean {
+    if (!reveal.owner.isConnected || !reveal.root.isConnected) return false;
+    const slice = textSliceRange(reveal.owner, reveal.startOffset, reveal.endOffset);
+    if (!slice) return false;
+    const clipBounds = reveal.clipBoxes.filter(el => el.isConnected).map(rect);
+    const occludingRects = occluderRectsFor(reveal.owner, collectVisibleOccluders(OVERLAY_OCCLUDER), true);
+    const rawBoxes = Array.from(slice.range.getClientRects()).filter(box => box.width > 0 && box.height > 0);
+    const boxes = resolveToolDetailRevealBoxes({
+      glyphBoxes: rawBoxes,
+      ownerRect: rect(reveal.root),
+      clipBounds,
+      occludingRects,
+      maxBoxes: 40,
+    });
+    const backgroundColor = nearestPaintedBackground(slice.anchor);
+    while (reveal.blurCovers.length < boxes.length) {
+      const blurCover = document.createElement('div');
+      blurCover.style.setProperty('position', 'absolute', 'important');
+      blurCover.style.setProperty('pointer-events', 'none', 'important');
+      blurCover.style.setProperty('border-radius', '3px', 'important');
+      reveal.blurLayer.appendChild(blurCover);
+      reveal.blurCovers.push(blurCover);
+      if (typeof blurCover.animate === 'function' && reveal.backdropFrames.length > 0) {
+        try {
+          blurCover.animate(reveal.backdropFrames, {
+            duration: reveal.durationMs,
+            easing: EASING,
+            fill: 'both',
+          });
+        } catch { /* ignore unsupported backdrop-filter animation */ }
+      }
+    }
+    while (reveal.blurCovers.length > boxes.length) reveal.blurCovers.pop()?.remove();
+    while (reveal.tintCovers.length < boxes.length) {
+      const tintCover = document.createElement('div');
+      tintCover.style.setProperty('position', 'absolute', 'important');
+      tintCover.style.setProperty('pointer-events', 'none', 'important');
+      tintCover.style.setProperty('border-radius', '3px', 'important');
+      reveal.tintLayer.appendChild(tintCover);
+      reveal.tintCovers.push(tintCover);
+    }
+    while (reveal.tintCovers.length > boxes.length) reveal.tintCovers.pop()?.remove();
+    boxes.forEach((box, index) => {
+      const blurCover = reveal.blurCovers[index];
+      const tintCover = reveal.tintCovers[index];
+      for (const cover of [blurCover, tintCover]) {
+        cover.style.setProperty('left', `${box.left}px`, 'important');
+        cover.style.setProperty('top', `${box.top}px`, 'important');
+        cover.style.setProperty('width', `${box.width}px`, 'important');
+        cover.style.setProperty('height', `${box.height}px`, 'important');
+      }
+      tintCover.style.setProperty('background-color', backgroundColor, 'important');
+    });
+    return boxes.length > 0;
+  }
+  function tickToolDetailReveals() {
+    revealFrame = 0;
+    for (const reveal of Array.from(toolDetailReveals)) {
+      if (!syncToolDetailReveal(reveal)) active.get(reveal.tintLayer)?.();
+    }
+    if (toolDetailReveals.size > 0 && canAnimate()) {
+      revealFrame = window.requestAnimationFrame(tickToolDetailReveals);
+    }
+  }
+  function retainRevealHostPosition(host: Element): () => void {
+    let lease = revealHostPositions.get(host);
+    if (!lease) {
+      if (window.getComputedStyle(host).getPropertyValue('position') !== 'static') return () => {};
+      lease = { count: 0, restore: temporaryStyles(host, { position: 'relative' }) };
+      revealHostPositions.set(host, lease);
+    }
+    const retained = lease;
+    retained.count++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      retained.count--;
+      if (retained.count === 0) {
+        revealHostPositions.delete(host);
+        retained.restore();
+      }
+    };
+  }
+  function animateGrowingToolText(allow: boolean) {
+    const { messages, timeline, pace } = getPreferences();
+    for (const reveal of Array.from(toolDetailReveals)) {
+      if (!syncToolDetailReveal(reveal)) active.get(reveal.tintLayer)?.();
+    }
+
+    const next = new Map<Element, ToolDetailTextState>();
+    const targets: Array<{ detail: Element; owner: Element; isToolDetail: boolean; isStreaming: boolean }> = [];
+    for (const tool of live(TOOL).slice(-80)) {
+      if (tool.matches('[data-testid="tool-call-group"]')) continue;
+      const header = firstBoxChild(tool);
+      const isStreaming = Boolean(header && all(header, '[style*="--paseo-shimmer"],[data-native-polish-shimmer-overlay]').length > 0);
+      for (const detail of Array.from(tool.children).slice(1)) {
+        if (detail.matches(TOOL) || detail.querySelector(TOOL)) continue;
+        targets.push({
+          detail,
+          owner: firstBoxChild(detail) ?? detail,
+          isToolDetail: true,
+          isStreaming,
+        });
+      }
+    }
+    for (const stream of live('[data-testid="native-polish-streaming-assistant"]')) {
+      targets.push({ detail: stream, owner: stream, isToolDetail: false, isStreaming: true });
+    }
+    for (const { detail, owner, isToolDetail, isStreaming } of targets) {
+      if (!visible(owner)) continue;
+      const text = owner.textContent ?? '';
+      const previous = toolDetailText.get(detail);
+      if (previous && previous.owner !== owner) {
+        for (const reveal of Array.from(toolDetailReveals)) {
+          if (reveal.owner === previous.owner) active.get(reveal.tintLayer)?.();
+        }
+      }
+      const layout = measureToolDetailLayout(owner, text, previous);
+      const detailChat = detail.closest(CHAT);
+      const detailChatState = detailChat ? chats.get(detailChat) : undefined;
+      const detailChatHydrating = Boolean(
+        detailChat &&
+          (detailChat.getAttribute('data-native-polish-hydrating') === 'true' ||
+            !detailChatState ||
+            Date.now() < detailChatState.hydrationQuietUntil),
+      );
+      if (detailChatHydrating) {
+        for (const reveal of Array.from(toolDetailReveals)) {
+          if (
+            reveal.owner === owner ||
+            reveal.owner === previous?.owner ||
+            hasAncestor(reveal.root, [detail])
+          ) {
+            active.get(reveal.tintLayer)?.();
+          }
+        }
+        if (layout.scrollContent) riseFor(toolDetailRises, layout.scrollContent)?.cancel();
+      }
+      const canAnimateTextReveal = allow && !detailChatHydrating && (isToolDetail ? timeline : messages);
+      const canAnimateDetail = canAnimateTextReveal && Date.now() >= quietUntil;
+      const manualDisclosure = pending?.disclosure?.element === detail.closest(TOOL);
+
+      let committedHeight = layout.naturalHeight;
+      if (isToolDetail && previous && text !== previous.text && canAnimateDetail && !manualDisclosure) {
+        const heightTransition = toolDetailHeightTransition({
+          previousHeight: previous.committedHeight,
+          currentHeight: layout.naturalHeight,
+          inFlightHeight: previous.box === layout.box ? layout.inFlightHeight : null,
+        });
+        if (heightTransition) {
+          // Finish the old owner before saving the new temporary styles, or
+          // its cleanup can remove the replacement animation's clipping.
+          active.get(layout.box)?.();
+          const finishChatHeight = beginChatHeightAnimation(detailChat, layout.box);
+          let restore = temporaryStyles(layout.box, heightTransition.styles);
+          const animation = animate(layout.box, heightTransition.keyframes, (cancelled) => {
+            toolDetailHeightTweens.delete(layout.box);
+            restore();
+            finishChatHeight(cancelled);
+          }, 0, duration());
+          const effect = animation?.effect;
+          if (effect?.target === layout.box) {
+            toolDetailHeightTweens.set(layout.box, {
+              scrollBox: layout.scrollBox,
+              measureNaturalHeight() {
+                // Measure the host layout synchronously without losing the
+                // running tween's position or restarting its easing.
+                effect.target = null;
+                restore();
+                try {
+                  return rect(layout.box).height;
+                } finally {
+                  restore = temporaryStyles(layout.box, heightTransition.styles);
+                  effect.target = layout.box;
+                }
+              },
+            });
+          }
+        } else if (layout.inFlightHeight !== null && previous.box === layout.box) {
+          if (Math.abs(layout.naturalHeight - previous.committedHeight) < 2) {
+            committedHeight = previous.committedHeight;
+          } else {
+            active.get(layout.box)?.();
+          }
+        }
+        if (
+          isStreaming &&
+          layout.scrollBox &&
+          layout.scrollContent &&
+          layout.naturalHeight >= layout.maxHeight - 1 &&
+          layout.contentHeight > previous.contentHeight + 1
+        ) {
+          const delta = layout.contentHeight - previous.contentHeight;
+          const previousScrollBoxMax = Math.max(0, layout.scrollBox.scrollHeight - delta - layout.scrollBox.clientHeight);
+          if (layout.scrollBox.scrollTop >= previousScrollBoxMax - BOTTOM_SCROLL_EPSILON_PX) {
+            layout.scrollBox.scrollTop = Math.max(0, layout.scrollBox.scrollHeight - layout.scrollBox.clientHeight);
+            riseFor(toolDetailRises, layout.scrollContent)?.start(delta);
+          }
+        }
+      }
+
+      next.set(detail, {
+        text,
+        owner,
+        box: layout.box,
+        committedHeight,
+        contentHeight: layout.contentHeight,
+      });
+
+      if (!(isToolDetail ? canAnimateDetail : canAnimateTextReveal)) continue;
+      const baselineText =
+        previous !== undefined
+          ? previous.text
+          : isToolDetail && isStreaming && !manualDisclosure && text.length > 0 && text.length <= 48
+            ? ''
+            : undefined;
+      const transition = toolDetailTextTransition(baselineText, text, pace);
+      if (!transition) continue;
+
+      // Cover only the appended glyph rectangles with a paired backdrop-blur
+      // layer and background-coloured tint layer, then fade them together
+      // at the selected pace. Keeping `root` and `blurLayer` at opacity 1 avoids creating a
+      // CSS Backdrop Root while the host remains the sole text painter.
+      if (!textSliceRange(owner, transition.enteringStart, transition.enteringEnd)) continue;
+      const host = detail;
+      const restoreHost = retainRevealHostPosition(host);
+      const root = document.createElement('div');
+      root.setAttribute('data-native-polish-ghost', '');
+      root.setAttribute('aria-hidden', 'true');
+      root.setAttribute('inert', '');
+      root.style.setProperty('position', 'absolute', 'important');
+      root.style.setProperty('inset', '0', 'important');
+      root.style.setProperty('pointer-events', 'none', 'important');
+      root.style.setProperty('z-index', '1', 'important');
+      const blurLayer = document.createElement('div');
+      blurLayer.style.setProperty('position', 'absolute', 'important');
+      blurLayer.style.setProperty('inset', '0', 'important');
+      blurLayer.style.setProperty('pointer-events', 'none', 'important');
+      const tintLayer = document.createElement('div');
+      tintLayer.style.setProperty('position', 'absolute', 'important');
+      tintLayer.style.setProperty('inset', '0', 'important');
+      tintLayer.style.setProperty('pointer-events', 'none', 'important');
+      root.appendChild(blurLayer);
+      root.appendChild(tintLayer);
+      host.appendChild(root);
+      const clipBoxes: Element[] = [];
+      if (layout.scrollBox) clipBoxes.push(layout.scrollBox);
+      if (detailChat && detailChat !== layout.scrollBox) clipBoxes.push(detailChat);
+      const reveal: ToolDetailReveal = {
+        owner,
+        clipBoxes,
+        startOffset: transition.enteringStart,
+        endOffset: transition.enteringEnd,
+        backdropFrames: transition.backdrop,
+        durationMs: transition.durationMs,
+        root,
+        blurLayer,
+        tintLayer,
+        blurCovers: [],
+        tintCovers: [],
+        restoreHost,
+      };
+      toolDetailReveals.add(reveal);
+      ghosts.add(root);
+      if (!syncToolDetailReveal(reveal)) {
+        root.remove(); ghosts.delete(root); toolDetailReveals.delete(reveal); reveal.restoreHost();
+        continue;
+      }
+      if (!revealFrame) revealFrame = window.requestAnimationFrame(tickToolDetailReveals);
+      animate(tintLayer, transition.cover, () => {
+        root.remove(); ghosts.delete(root); toolDetailReveals.delete(reveal); reveal.restoreHost();
+      }, 0, transition.durationMs);
+    }
+    for (const [detail, state] of toolDetailText) {
+      if (!next.has(detail) && detail.isConnected) {
+        const detailChat = detail.closest(CHAT);
+        if (!detailChat || visibleChats.has(detailChat)) {
+          next.set(detail, state);
+        }
+      }
+    }
+    toolDetailText = next;
+  }
+  function chatContextKey(chat: Element): string {
+    const pane = chat.closest(PANE);
+    const paneId = pane?.getAttribute('data-testid') ?? '';
+    const scope = pane ?? document.body;
+    const selectedTab = scope.querySelector(`${TAB}[aria-selected="true"]`)?.getAttribute('data-testid')
+      ?? document.body.querySelector(`${TAB}[aria-selected="true"]`)?.getAttribute('data-testid')
+      ?? '';
+    const selectedWorkspace = document.body.querySelector(
+      `${WORKSPACE_ROW}[aria-selected="true"], ${WORKSPACE_ROW}[data-selected="true"], ${WORKSPACE_ROW}[aria-current="true"]`,
+    )?.getAttribute('data-testid') ?? '';
+    return `${paneId}|${selectedWorkspace}|${selectedTab}`;
+  }
+  interface WorkedFooterTarget {
+    keys: string[];
+    row: Element;
+    label: Element;
+    chrome: Element[];
+    hasFollowingContent: boolean;
+    isTurnCompletionFooter: boolean;
+  }
+  function hasContentAfterWorkedFooter(chat: Element, footerRow: Element, historyRow: Element | null, rows: Element[]): boolean {
+    for (let cursor: Element | null = footerRow; cursor && cursor !== chat && cursor !== historyRow; cursor = cursor.parentElement) {
+      for (let sibling = cursor.nextElementSibling; sibling; sibling = sibling.nextElementSibling) {
+        if (sibling.getAttribute('data-native-polish-ghost') !== null) continue;
+        if (rect(sibling).height > 1) return true;
+      }
+    }
+    if (historyRow) {
+      const rowIndex = rows.indexOf(historyRow);
+      if (rowIndex >= 0 && rowIndex < rows.length - 1) return true;
+    }
+    const indicator = chat.querySelector('[data-testid="turn-working-indicator"]');
+    return Boolean(indicator && visible(indicator));
+  }
+  function findWorkedFooters(chat: Element, rows: Element[]): WorkedFooterTarget[] {
+    const results: WorkedFooterTarget[] = [];
+    const seenRows = new Set<Element>();
+    const textCounts = new Map<string, number>();
+    const leaves = all(chat, '*').filter((el) => {
+      if (el.closest('[data-native-polish-ghost]') || el.getAttribute('aria-hidden') === 'true') return false;
+      if (el.children.length > 0) return false;
+      return /^Worked\b/.test(el.textContent?.trim() ?? '');
+    });
+    for (const leaf of leaves) {
+      const historyRow = leaf.closest(HISTORY_ROW);
+      const taggedFooter = leaf.closest('[data-testid="turn-footer-entry-motion"]');
+      let footerRow: Element = taggedFooter ?? leaf;
+      if (!taggedFooter) {
+        const stopAt = historyRow ?? chat.querySelector(CHAT_CONTENT) ?? chat;
+        while (
+          footerRow.parentElement &&
+          footerRow.parentElement !== stopAt &&
+          !footerRow.parentElement.querySelector(
+            '[data-testid="stream-item"], [data-testid="assistant-message"], [data-testid="tool-call-badge"], [data-testid="tool-call-group"], [data-testid="user-message"], [data-testid="turn-working-indicator"], ' +
+              CHAT_TIMELINE,
+          )
+        ) {
+          footerRow = footerRow.parentElement;
+        }
+      }
+      if (seenRows.has(footerRow)) continue;
+      seenRows.add(footerRow);
+      let label: Element = leaf;
+      while (
+        label.parentElement &&
+        label.parentElement !== footerRow &&
+        Array.from(label.parentElement.children).every((child) => /^Worked\b/.test(child.textContent?.trim() ?? ''))
+      ) {
+        label = label.parentElement;
+      }
+      const group = label.parentElement;
+      const chrome =
+        group && group !== footerRow
+          ? Array.from(group.children).filter((child) => child !== label)
+          : [];
+      const rowId = historyRow?.getAttribute('data-history-row-id') ?? '';
+      const normalizedText = (label.textContent ?? leaf.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const textOccurrence = textCounts.get(normalizedText) ?? 0;
+      textCounts.set(normalizedText, textOccurrence + 1);
+      const keys = [`text:${normalizedText}#${textOccurrence}`, `aux:${normalizedText}`];
+      if (rowId) keys.unshift(`row:${rowId}`);
+      results.push({
+        keys,
+        row: footerRow,
+        label,
+        chrome,
+        hasFollowingContent: hasContentAfterWorkedFooter(chat, footerRow, historyRow, rows),
+        isTurnCompletionFooter: Boolean(
+          taggedFooter || !historyRow || footerRow.querySelector('button, [role="button"]'),
+        ),
+      });
+    }
+    return results;
+  }
+  function userMessageSignature(row: Element, counts: Map<string, number>): string | null {
+    const userMsg = row.querySelector(USER_MESSAGE);
+    if (!userMsg) return null;
+    const textEl = userMsg.querySelector('[data-message-text="true"]') ?? userMsg;
+    const normalized = (textEl.textContent ?? '').replace(/\s+/g, ' ').trim();
+    const count = counts.get(normalized) ?? 0;
+    counts.set(normalized, count + 1);
+    return `user:${normalized}#${count}`;
+  }
+  function isChatHistorySyncing(chat: Element): boolean {
+    const scope = chat.closest(PANE) ?? chat.parentElement ?? chat;
+    return Boolean(
+      all(scope, '[data-testid="agent-history-overlay"], [data-testid="load-older-history-spinner"]').some(
+        visible,
+      ),
+    );
+  }
+  function chatTextSignature(chat: Element, rows: Element[]): string {
+    const tailRows = rows.slice(-12);
+    let sig = `${rows.length}:`;
+    for (const row of tailRows) {
+      const id = row.getAttribute('data-history-row-id') ?? '';
+      const len = (row.textContent ?? '').length;
+      sig += `${id}=${len};`;
+    }
+    for (const stream of all(chat, '[data-testid="native-polish-streaming-assistant"]')) {
+      sig += `s=${(stream.textContent ?? '').length};`;
+    }
+    return sig;
+  }
+  function cancelChatMotion(chat: Element, rows: Element[], purgeToolText: boolean, preserveLocalAnswer = false) {
+    const timeline = timelineFor(chat, rows);
+    const footer = footerFor(chat);
+    if (timeline) riseFor(timelineRises, timeline)?.cancel();
+    if (footer) riseFor(footerRises, footer)?.cancel();
+    chatDisclosureQuietUntil.delete(chat);
+    chatHeightAnimations.delete(chat);
+    const question = chatQuestions.get(chat);
+    const localAnswer = preserveLocalAnswer && question && Date.now() < question.submitUntil
+      ? rows.find(row => row.getAttribute('data-history-row-id') === question.localAnswerRowId) : null;
+    for (const [el, stop] of Array.from(active.entries())) {
+      if (localAnswer && (el === localAnswer || hasAncestor(el, [localAnswer]))) continue;
+      if (el === chat || hasAncestor(el, [chat])) stop();
+    }
+    for (const reveal of Array.from(toolDetailReveals)) {
+      if (hasAncestor(reveal.root, [chat]) || hasAncestor(reveal.owner, [chat])) {
+        active.get(reveal.tintLayer)?.();
+        reveal.root.remove();
+        ghosts.delete(reveal.root);
+        toolDetailReveals.delete(reveal);
+        reveal.restoreHost();
+      }
+    }
+    for (const ghostEl of Array.from(ghosts)) {
+      if (hasAncestor(ghostEl, [chat])) {
+        active.get(ghostEl)?.();
+        ghostEl.remove();
+        ghosts.delete(ghostEl);
+      }
+    }
+    if (purgeToolText) {
+      for (const detail of Array.from(toolDetailText.keys())) {
+        if (detail === chat || hasAncestor(detail, [chat])) {
+          toolDetailText.delete(detail);
+        }
+      }
+    }
+  }
+  function syncChatHydrationAttribute(chat: Element, hydrationQuietUntil: number, now: number) {
+    const existingTimer = hydrationTimers.get(chat);
+    if (now < hydrationQuietUntil) {
+      if (chat.getAttribute('data-native-polish-hydrating') !== 'true') {
+        chat.setAttribute('data-native-polish-hydrating', 'true');
+        decorations.set(chat, () => chat.removeAttribute('data-native-polish-hydrating'));
+      }
+      if (existingTimer) window.clearTimeout(existingTimer);
+      const delay = Math.max(16, hydrationQuietUntil - now + 16);
+      const timer = window.setTimeout(() => {
+        hydrationTimers.delete(chat);
+        if (disposed || suspended || !chat.isConnected) {
+          chat.removeAttribute('data-native-polish-hydrating');
+          return;
+        }
+        const state = chats.get(chat);
+        const currentNow = Date.now();
+        if (state && currentNow < state.hydrationQuietUntil) {
+          syncChatHydrationAttribute(chat, state.hydrationQuietUntil, currentNow);
+          return;
+        }
+        chat.removeAttribute('data-native-polish-hydrating');
+        if (visible(chat)) {
+          refreshAmbient(false, new Set<Region>(['tools', 'messages']));
+        }
+      }, delay);
+      hydrationTimers.set(chat, timer);
+    } else {
+      if (existingTimer) {
+        window.clearTimeout(existingTimer);
+        hydrationTimers.delete(chat);
+      }
+      if (chat.getAttribute('data-native-polish-hydrating') !== null) {
+        chat.removeAttribute('data-native-polish-hydrating');
+      }
+    }
+  }
+  function clearImagePlaceholders() {
+    for (const cleanup of Array.from(imagePlaceholders.values())) cleanup();
+  }
+  function showImagePlaceholder(image: Element, surface: Element) {
+    if (imagePlaceholders.has(image)) return;
+    let placeholder: Element | null = null;
+    let restore = () => {};
+    if (surface !== image) {
+      const restorePosition = retainRevealHostPosition(surface);
+      const box = rect(surface);
+      const restoreSize = temporaryStyles(surface, {
+        ...(box.width < 1 ? { 'min-width': '48px' } : {}),
+        ...(box.height < 1 ? { 'min-height': '48px' } : {}),
+      });
+      restore = () => { restoreSize(); restorePosition(); };
+      placeholder = document.createElement('div');
+      placeholder.setAttribute('data-native-polish-image-placeholder', '');
+      placeholder.setAttribute('data-native-polish-ghost', '');
+      placeholder.setAttribute('aria-hidden', 'true');
+      placeholder.setAttribute('inert', '');
+      for (const [key, value] of Object.entries({
+        position: 'absolute', inset: '0', 'pointer-events': 'none',
+        'border-radius': 'inherit', 'background-color': 'var(--colors-surface2, rgba(127, 127, 127, .16))',
+      })) placeholder.style.setProperty(key, value, 'important');
+      surface.appendChild(placeholder);
+    } else {
+      const box = rect(image);
+      restore = temporaryStyles(image, {
+        'background-color': 'var(--colors-surface2, rgba(127, 127, 127, .16))',
+        ...(box.width < 1 ? { 'min-width': '48px' } : {}),
+        ...(box.height < 1 ? { 'min-height': '48px' } : {}),
+      });
+      image.setAttribute('data-native-polish-image-placeholder', '');
+    }
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      image.removeEventListener('load', loaded);
+      image.removeEventListener('error', failed);
+      if (placeholder) active.get(placeholder)?.();
+      placeholder?.remove();
+      if (!placeholder) image.removeAttribute('data-native-polish-image-placeholder');
+      restore();
+      imagePlaceholders.delete(image);
+    };
+    const loaded: Listener = () => {
+      if (placeholder && canAnimate() && getPreferences().messages) {
+        animate(placeholder, [{ opacity: 1 }, { opacity: 0 }], cleanup, 0, 160);
+      } else cleanup();
+    };
+    const failed: Listener = () => cleanup();
+    imagePlaceholders.set(image, cleanup);
+    image.addEventListener('load', loaded);
+    image.addEventListener('error', failed);
+    if (image.complete !== false) cleanup();
+  }
+  function syncChatImages(chatsToScan: Element[], allow: boolean) {
+    const observed = new Set<Element>();
+    const preferences = getPreferences();
+    const now = Date.now();
+    for (const chat of chatsToScan) {
+      const state = chats.get(chat);
+      if (!state) continue;
+      let seen = chatImageSeen.get(chat);
+      if (!seen || seen.contextKey !== state.contextKey) {
+        if (seen) chatImageRecentRows.delete(chat);
+        seen = { contextKey: state.contextKey, rows: new Map() };
+        chatImageSeen.set(chat, seen);
+      }
+      const rows = all(chat, HISTORY_ROW);
+      const lastRow = rows[rows.length - 1];
+      const viewport = rect(chat);
+      for (const row of rows.slice(-80)) {
+        const rowId = row.getAttribute('data-history-row-id');
+        let indices = rowId ? seen.rows.get(rowId) : undefined;
+        if (rowId && !indices) { indices = new Set(); seen.rows.set(rowId, indices); }
+        const images: Array<{ image: Element | null; surface: Element }> = [];
+        for (const node of all(row, 'img, [role="progressbar"]').slice(0, 80)) {
+          if (images.length >= 20) break;
+          const content = node.closest(CHAT_IMAGE_CONTENT);
+          if (!content || node.closest('[data-native-polish-ghost]')) continue;
+          const parent = node.parentElement;
+          if (!node.matches('img')) {
+            // Paseo's waiting assistant image has no image node until its
+            // source is acquired, but its centered spinner owns a 160px frame.
+            if (!parent || !content.matches('[data-testid="assistant-message"], [data-testid="native-polish-streaming-assistant"]') ||
+                parent.children.length !== 1 || parent.children[0] !== node || parent.textContent?.trim()) continue;
+            const style = window.getComputedStyle(parent);
+            if (!(parseFloat(style.getPropertyValue('min-height')) >= 159) || rect(parent).height < 150 ||
+                style.getPropertyValue('align-items') !== 'center' || style.getPropertyValue('justify-content') !== 'center') continue;
+            images.push({ image: null, surface: parent });
+            continue;
+          }
+          const role = node.closest('[role="img"]');
+          const painted = parent?.children[0];
+          // React Native Web paints the image as a sibling background and
+          // keeps the actual img transparent for accessibility and loading.
+          const nativeWebSurface = Boolean(parent && painted && parent.children[1] === node &&
+            painted.matches('div') && window.getComputedStyle(node).getPropertyValue('opacity') === '0' &&
+            window.getComputedStyle(painted).getPropertyValue('background-image').startsWith('url('));
+          const surface = role && role !== node && hasAncestor(role, [row]) ? role
+            : nativeWebSurface && parent ? parent
+            : parent && parent !== content && parent.children.length === 1 && !(parent.textContent?.trim()) ? parent
+              : node;
+          images.push({ image: node, surface });
+        }
+        images.forEach(({ image, surface }, index) => {
+          if (image) observed.add(image);
+          const isNew = Boolean(indices && !indices.has(index));
+          indices?.add(index);
+          if (image) {
+            const pending = image.complete === false && Boolean(image.getAttribute('src') || image.getAttribute('srcset'));
+            const hostLoading = Boolean(surface.querySelector('[role="progressbar"], [aria-busy="true"]'));
+            if (pending && preferences.enabled && preferences.messages && !hostLoading) showImagePlaceholder(image, surface);
+            else if ((!pending || !preferences.enabled || !preferences.messages || hostLoading) && imagePlaceholders.has(image)) imagePlaceholders.get(image)?.();
+          }
+          const box = rect(surface);
+          const onScreen = box.width > 1 && box.height > 1 && box.bottom > viewport.top && box.top < viewport.bottom;
+          const recentRow = rowId ? (chatImageRecentRows.get(chat)?.get(rowId) ?? 0) > now : false;
+          if (isNew && allow && canAnimate() && preferences.messages && row === lastRow &&
+              (state.running || recentRow) && !state.userScrolledUp && now >= quietUntil &&
+              now >= state.hydrationQuietUntil && !active.has(row) && !active.has(surface) && onScreen) {
+            animate(surface, [{ opacity: 0, translate: '0 6px' }, { opacity: 1, translate: '0 0' }], undefined, 0, 220);
+          }
+        });
+      }
+      while (seen.rows.size > 1000) seen.rows.delete(seen.rows.keys().next().value!);
+    }
+    for (const [image, cleanup] of imagePlaceholders) if (!observed.has(image) || !image.isConnected) cleanup();
+  }
+  const chatPromptSeen = new WeakMap<Element, { contextKey: string; nodes: WeakSet<Element> }>();
+  function syncChatPrompts(chatsToScan: Element[], allow: boolean) {
+    const now = Date.now();
+    for (const chat of chatsToScan) {
+      const state = chats.get(chat);
+      if (!state) continue;
+      let seen = chatPromptSeen.get(chat);
+      if (!seen || seen.contextKey !== state.contextKey) {
+        seen = { contextKey: state.contextKey, nodes: new WeakSet() };
+        chatPromptSeen.set(chat, seen);
+      }
+      const candidates = new Set<Element>();
+      for (const marker of all(chat, '[data-testid="question-form-card"], [data-testid="permission-request-question"]').slice(-40)) {
+        // Permission cards have no root test ID; the question and actions
+        // share their container, or belong to a tagged plan card.
+        const prompt = marker.matches('[data-testid="question-form-card"]') ? marker
+          : marker.closest('[data-testid="permission-plan-card"]') ?? marker.parentElement;
+        if (prompt && !prompt.closest('[data-native-polish-ghost]')) candidates.add(prompt);
+      }
+      const viewport = rect(chat);
+      for (const prompt of candidates) {
+        const isNew = !seen.nodes.has(prompt);
+        seen.nodes.add(prompt);
+        if (!isNew || !allow || !canAnimate() || !getPreferences().messages ||
+            now < state.hydrationQuietUntil || now < quietUntil ||
+            active.has(prompt) || hasAncestor(prompt, candidates) || hasAncestor(prompt, active.keys())) continue;
+        const box = rect(prompt);
+        if (visible(prompt) && box.bottom > viewport.top && box.top < viewport.bottom) {
+          animate(prompt, [{ opacity: 0, translate: '0 6px' }, { opacity: 1, translate: '0 0' }]);
+        }
+      }
+    }
+  }
+  function enterMessage(row: Element, chat: Element, isUserMessage: boolean, delayMs: number, followsQuestion: boolean, timelineRise: ContentRise | null, footerRise: ContentRise | null) {
+    const enter = () => {
+      const motion = messageEntranceMotion(isUserMessage);
+      const restore = motion.styles ? temporaryStyles(row, motion.styles) : undefined;
+      animate(row, motion.keyframes, restore, delayMs, 320);
+    };
+    const moving = () => Math.max(Math.abs(timelineRise?.getOffset() ?? 0), Math.abs(footerRise?.getOffset() ?? 0)) > 2;
+    if (!followsQuestion || (!moving() && !chat.querySelector('[data-testid="question-form-card"]'))) {
+      enter();
+      return;
+    }
+    // Keep the answer out of the question's layout/scroll handoff, then
+    // reveal it from its settled position instead of spending its fade there.
+    active.get(row)?.();
+    const restore = temporaryStyles(row, { opacity: '0' });
+    const started = Date.now();
+    let stableSince = started;
+    let previousTop = rect(row).top;
+    let previousScroll = chat.scrollTop;
+    let frame = 0;
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      window.cancelAnimationFrame(frame);
+      if (active.get(row) === stop) active.delete(row);
+      restore();
+    };
+    const step = () => {
+      if (!row.isConnected || !canAnimate() || !getPreferences().messages || Date.now() < quietUntil) {
+        stop();
+        return;
+      }
+      const now = Date.now();
+      const top = rect(row).top;
+      if (moving() || chat.querySelector('[data-testid="question-form-card"]') ||
+          Math.abs(top - previousTop) > .5 || Math.abs(chat.scrollTop - previousScroll) > .5) stableSince = now;
+      previousTop = top;
+      previousScroll = chat.scrollTop;
+      if (now - stableSince >= 80 || now - started >= 1000) {
+        stop();
+        enter();
+      } else frame = window.requestAnimationFrame(step);
+    };
+    active.set(row, stop);
+    frame = window.requestAnimationFrame(step);
   }
   function updateMessages(allow: boolean) {
-    for (const chat of live(CHAT)) {
-      const rows = all(chat, HISTORY_ROW);
+    const activeChats = live(CHAT);
+    const previousVisibleChats = visibleChats;
+    visibleChats = new Set(activeChats);
+    for (const prevChat of previousVisibleChats) {
+      if (!visibleChats.has(prevChat)) {
+        cancelChatMotion(prevChat, all(prevChat, HISTORY_ROW), true);
+      }
+    }
+    const chatHydrationUntil = new Map<Element, number>();
+    const chatTextSignatures = new Map<Element, string>();
+    const now = Date.now();
+    for (const chat of activeChats) {
       const old = chats.get(chat);
+      const wasVisibleLastPass = previousVisibleChats.has(chat);
+      const rows = all(chat, HISTORY_ROW);
+      const contextKey = chatContextKey(chat);
+      const currentRowIds = new Set(rows.map((row) => row.getAttribute('data-history-row-id') ?? '').filter(Boolean));
+      const textSignature = chatTextSignature(chat, rows);
+      chatTextSignatures.set(chat, textSignature);
+      const contextChanged = Boolean(old && old.contextKey !== contextKey);
+      const conversationSwitched = Boolean(
+        old && (
+          contextChanged
+          || (old.rowIds.size > 0 && currentRowIds.size === 0)
+          || (
+            old.rowIds.size > 0
+            && currentRowIds.size > 0
+            && !Array.from(currentRowIds).some((id) => old.rowIds.has(id))
+            && !old.stream
+            && !old.handoff
+          )
+        ),
+      );
+      const firstHistoryPopulation = Boolean(!old || (old.seen.size === 0 && rows.length > 0));
+      const isFirstLiveUserTurn = Boolean(
+        allow &&
+          firstHistoryPopulation &&
+          rows.length >= 1 &&
+          rows.length <= 2 &&
+          rows[0]?.querySelector(USER_MESSAGE) &&
+          !rows.some((row) => Boolean(row.querySelector('[data-testid="assistant-message"]'))),
+      );
+      const running = Boolean(chat.querySelector('[data-testid="turn-working-indicator"]'));
+      const liveTurn = running || Boolean(old?.running);
+      const addedRowCount = old
+        ? Array.from(currentRowIds).filter((id) => !old.rowIds.has(id)).length
+        : currentRowIds.size;
+      const removedRowCount = old
+        ? Array.from(old.rowIds).filter((id) => !currentRowIds.has(id)).length
+        : 0;
+      const previousQuestion = chatQuestions.get(chat);
+      const questionPresent = Boolean(chat.querySelector('[data-testid="question-form-card"]'));
+      const submitUntil = previousQuestion?.contextKey === contextKey && !conversationSwitched && !contextChanged
+        ? previousQuestion.submitUntil : 0;
+      const localSubmission = now < submitUntil;
+      const questionResolutionUntil = allow && old && wasVisibleLastPass && !conversationSwitched &&
+        !contextChanged && (now >= old.hydrationQuietUntil || localSubmission) && previousQuestion?.contextKey === contextKey
+        ? (previousQuestion.present && !questionPresent ? now + 2000 : previousQuestion.resolutionUntil)
+        : 0;
+      const answerUntil = allow && old && wasVisibleLastPass && !conversationSwitched &&
+        !contextChanged && (now >= old.hydrationQuietUntil || localSubmission) && previousQuestion?.contextKey === contextKey
+        ? (previousQuestion.present && !questionPresent ? now + 15000 : previousQuestion.answerUntil)
+        : 0;
+      let localAnswerRowId = previousQuestion?.contextKey === contextKey ? previousQuestion.localAnswerRowId : null;
+      if (allow && wasVisibleLastPass && !contextChanged && !conversationSwitched && localSubmission &&
+          !questionPresent && addedRowCount <= 3 && removedRowCount <= 1 && !isChatHistorySyncing(chat)) {
+        localAnswerRowId = rows.find(row => !old?.seen.has(row.getAttribute('data-history-row-id') ?? '') && row.querySelector(USER_MESSAGE))
+          ?.getAttribute('data-history-row-id') ?? localAnswerRowId;
+      }
+      chatQuestions.set(chat, {
+        contextKey, present: questionPresent, resolutionUntil: questionResolutionUntil, answerUntil,
+        submitUntil: allow && wasVisibleLastPass ? submitUntil : 0, localAnswerRowId,
+      });
+      // An answer can arrive beside its completed question/tool row, or in
+      // the next commit. That small, known handoff is live output.
+      const questionResolution = now < questionResolutionUntil && addedRowCount <= 3 && removedRowCount <= 1;
+      const hasStreamDom = Boolean(chat.querySelector('[data-testid="native-polish-streaming-assistant"]'));
+      const handoffActive = Boolean(!hasStreamDom && (old?.stream || (old?.handoff && old.handoff.expires > now)));
+      const prelimEnteringUserMessage = Boolean(
+        (old || isFirstLiveUserTurn) &&
+          wasVisibleLastPass &&
+          !conversationSwitched &&
+          !contextChanged &&
+          now >= (old?.hydrationQuietUntil ?? 0) &&
+          (addedRowCount === 1 || (questionResolution && addedRowCount > 0)) &&
+          (removedRowCount === 0 || questionResolution) &&
+          rows.some((row) => {
+            const id = row.getAttribute('data-history-row-id') ?? '';
+            return Boolean(id && !old?.seen.has(id) && row.querySelector(USER_MESSAGE));
+          }),
+      );
+      const suppressDisclosureMotion =
+        now < (chatDisclosureQuietUntil.get(chat) ?? 0) ||
+        Boolean(chatHeightAnimations.get(chat)?.size);
+      const hasManualDisclosureCapture = Boolean(
+        pending?.disclosure && (pending.disclosure.chat === chat || pending.disclosure.element.closest(CHAT) === chat),
+      );
+      const isHistorySyncing = isChatHistorySyncing(chat);
+      const hydrationQuietUntil = resolveChatHydrationQuietUntil({
+        now,
+        previousQuietUntil: old?.hydrationQuietUntil ?? 0,
+        hasPreviousChatState: Boolean(old),
+        wasVisibleLastPass,
+        contextChanged,
+        conversationSwitched,
+        firstHistoryPopulation,
+        isFirstLiveUserTurn,
+        isHistorySyncing,
+        questionResolution,
+        addedRowCount,
+        removedRowCount,
+        hasEnteringUserMessage: prelimEnteringUserMessage,
+        handoffSwapCommit: handoffActive,
+        completedFooterPending: Boolean(old && !running && now < old.completedFooterPendingUntil),
+        handoffTransition: handoffActive,
+        suppressDisclosureMotion,
+        hasManualDisclosureCapture,
+        liveTurn,
+        textChanged: Boolean(old && old.textSignature !== textSignature),
+        scrollHeightDelta: old ? chat.scrollHeight - old.scrollHeight : 0,
+        scrollTopDelta: old ? chat.scrollTop - old.scrollTop : 0,
+      });
+      chatHydrationUntil.set(chat, hydrationQuietUntil);
+      syncChatHydrationAttribute(chat, hydrationQuietUntil, now);
+      if ((conversationSwitched || !wasVisibleLastPass || isHistorySyncing) && old) {
+        cancelChatMotion(chat, rows, conversationSwitched || !wasVisibleLastPass);
+        const footer = footerFor(chat);
+        old.contextKey = contextKey;
+        old.rowIds = currentRowIds;
+        old.seen = new Set(currentRowIds);
+        old.seenUserMessages = new Set();
+        const switchedUserCounts = new Map<string, number>();
+        for (const row of rows) {
+          const sig = userMessageSignature(row, switchedUserCounts);
+          if (sig) old.seenUserMessages.add(sig);
+        }
+        old.seenCompactions = new Set();
+        for (const item of all(chat, '[data-testid="stream-item"]')) {
+          if (!(item.textContent?.trim() ?? '').startsWith('Compacting')) continue;
+          const itemRow = item.closest(HISTORY_ROW);
+          const key = item.getAttribute('data-stream-item-id') ?? itemRow?.getAttribute('data-history-row-id') ?? '';
+          if (key) old.seenCompactions.add(key);
+        }
+        old.seenWorkedFooters = new Set();
+        for (const workedFooter of findWorkedFooters(chat, rows)) {
+          seenWorkedFooterNodes.add(workedFooter.row);
+          seenWorkedFooterNodes.add(workedFooter.label);
+          for (const key of workedFooter.keys) old.seenWorkedFooters.add(key);
+        }
+        old.pending.clear();
+        old.running = running;
+        old.completedFooterPendingUntil = 0;
+        old.scrollTop = chat.scrollTop;
+        old.compensatedScrollTop = chat.scrollTop;
+        old.maxScrollTop = Math.max(0, chat.scrollHeight - chat.clientHeight);
+        old.scrollHeight = chat.scrollHeight;
+        old.clientHeight = chat.clientHeight;
+        old.clientWidth = chat.clientWidth;
+        old.footer = footer;
+        old.footerTop = footer ? rect(footer).top : null;
+        old.stream = null;
+        old.handoff = null;
+        old.handoffQuietUntil = 0;
+        old.hydrationQuietUntil = hydrationQuietUntil;
+        old.reflowQuietUntil = 0;
+        old.textSignature = textSignature;
+      } else if (old) {
+        old.hydrationQuietUntil = hydrationQuietUntil;
+        if (now < hydrationQuietUntil) {
+          cancelChatMotion(chat, rows, false, true);
+        }
+      }
+    }
+    animateGrowingToolText(allow);
+    for (const chat of activeChats) {
+      const rows = all(chat, HISTORY_ROW);
+      const isToolSequenceRow = (candidate: Element | null) =>
+        Boolean(
+          candidate?.querySelector(
+            `${TOOL}, [data-testid="tool-call-summary-placeholder"], [data-testid="todo-list-card"]`,
+          ),
+        );
+      const hasCompletedFooterRow = (candidate: Element | null) =>
+        Boolean(candidate?.querySelector('[data-testid="turn-footer-entry-motion"]'));
+      for (const stream of all(chat, '[data-testid="native-polish-streaming-assistant"]')) {
+        const row = stream.closest(HISTORY_ROW);
+        const rowIndex = row ? rows.indexOf(row) : -1;
+        const above = rowIndex > 0 ? rows[rowIndex - 1] : null;
+        const below = rowIndex >= 0 && rowIndex < rows.length - 1 ? rows[rowIndex + 1] : null;
+        const { gapAbove, gapBelow } = resolveStreamingAssistantGaps({
+          aboveIsUserMessage: Boolean(above?.querySelector(USER_MESSAGE)),
+          aboveIsToolSequence: isToolSequenceRow(above),
+          aboveHasCompletedFooter: hasCompletedFooterRow(above),
+          belowExists: Boolean(below),
+          belowIsToolSequence: isToolSequenceRow(below),
+          currentHasCompletedFooter: hasCompletedFooterRow(row),
+        });
+        if (gapAbove) stream.setAttribute('data-native-polish-gap-above', gapAbove);
+        else stream.removeAttribute('data-native-polish-gap-above');
+        if (gapBelow) stream.setAttribute('data-native-polish-gap-below', gapBelow);
+        else stream.removeAttribute('data-native-polish-gap-below');
+      }
+      const old = chats.get(chat);
+      const contextKey = chatContextKey(chat);
       const running = Boolean(chat.querySelector('[data-testid="turn-working-indicator"]'));
       const seen = old?.seen ?? new Set<string>();
+      const seenUserMessages = old?.seenUserMessages ?? new Set<string>();
+      const seenCompactions = old?.seenCompactions ?? new Set<string>();
+      const seenWorkedFooters = old?.seenWorkedFooters ?? new Set<string>();
       const candidates = allow ? old?.pending ?? new Set<string>() : new Set<string>();
-      let lastKnown = -1;
-      rows.forEach((row, index) => { if (seen.has(row.getAttribute('data-history-row-id')!)) lastKnown = index; });
-      const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 180;
+      const currentIds = new Set(rows.map((row) => row.getAttribute('data-history-row-id') ?? '').filter(Boolean));
+      const hadRemovedRowId = Boolean(
+        old && Array.from(old.rowIds).some((prevId) => !currentIds.has(prevId)),
+      );
+      const userSigCounts = new Map<string, number>();
+      for (const row of rows) {
+        const id = row.getAttribute('data-history-row-id') ?? '';
+        const sig = userMessageSignature(row, userSigCounts);
+        if (!sig) continue;
+        if (id && !seen.has(id) && hadRemovedRowId && seenUserMessages.has(sig)) {
+          seen.add(id);
+        }
+        seenUserMessages.add(sig);
+      }
+      const firstHistoryPopulation = Boolean(!old || (old.seen.size === 0 && rows.length > 0));
+      const isFirstLiveUserTurn = Boolean(
+        allow &&
+          firstHistoryPopulation &&
+          rows.length >= 1 &&
+          rows.length <= 2 &&
+          rows[0]?.querySelector(USER_MESSAGE) &&
+          !rows.some((row) => Boolean(row.querySelector('[data-testid="assistant-message"]'))),
+      );
+      const hydrationQuietUntil = chatHydrationUntil.get(chat) ?? old?.hydrationQuietUntil ?? 0;
+      const suppressHydrationMotion = Date.now() < hydrationQuietUntil;
+      const localQuestion = chatQuestions.get(chat);
+      const localAnswerRowId = localQuestion && Date.now() < localQuestion.submitUntil ? localQuestion.localAnswerRowId : null;
+      if (suppressHydrationMotion) for (const id of candidates) if (id !== localAnswerRowId) candidates.delete(id);
+      const liveTurn = running || Boolean(old?.running);
+      const hasEnteringUserMessage = Boolean(
+        (old || isFirstLiveUserTurn) &&
+          rows.some((row) => {
+            const id = row.getAttribute('data-history-row-id') ?? '';
+            return Boolean(id && !seen.has(id) && row.querySelector(USER_MESSAGE) && (!suppressHydrationMotion || id === localAnswerRowId));
+          }),
+      );
+      if (hasEnteringUserMessage) {
+        const heightAnimated = chatHeightAnimations.get(chat);
+        if (heightAnimated?.size) {
+          for (const token of Array.from(heightAnimated)) {
+            if (!token.element.closest(TOOL)) {
+              active.get(token.element)?.();
+              heightAnimated.delete(token);
+            }
+          }
+        }
+      }
+      const currentScrollTop = chat.scrollTop;
+      const currentScrollHeight = chat.scrollHeight;
+      const currentClientHeight = chat.clientHeight;
+      const maxScrollTop = Math.max(0, currentScrollHeight - currentClientHeight);
+      const holdingPendingBottom = Boolean(
+        old && Date.now() < old.pendingBottomUntil && Date.now() >= quietUntil,
+      );
+      const previousCompensatedScrollTop =
+        old && holdingPendingBottom ? old.compensatedScrollTop : old?.scrollTop;
+      const followState = isFollowingScrollBottom({
+        currentScrollTop,
+        maxScrollTop,
+        previousScrollTop: old?.scrollTop,
+        previousCompensatedScrollTop,
+        previousMaxScrollTop: old?.maxScrollTop,
+        userScrolledUp: hasEnteringUserMessage ? false : old?.userScrolledUp,
+        holdingPendingBottom,
+      });
+      const userScrolledUp = suppressHydrationMotion
+        ? (followState.atBottom ? false : Boolean(old?.userScrolledUp))
+        : followState.userScrolledUp;
+      const wasFollowing = Boolean(old && Date.now() >= quietUntil && followState.wasFollowing);
+      const atBottom = followState.atBottom || hasEnteringUserMessage;
+      const streamIndex = rows.findIndex((row) => Boolean(row.querySelector('[data-testid="native-polish-streaming-assistant"]')));
+      const streamRow = streamIndex >= 0 ? rows[streamIndex] : null;
+      const stream = streamRow ? {
+        id: streamRow.getAttribute('data-history-row-id') ?? '',
+        index: streamIndex,
+        text: streamRow.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      } : null;
+      let handoff = !stream && old?.stream
+        ? { ...old.stream, expires: Date.now() + 2000 }
+        : !stream && old?.handoff && old.handoff.expires > Date.now() ? old.handoff : null;
+      const nativeAssistantRows = rows.filter((row) => Boolean(row.querySelector('[data-testid="assistant-message"]')));
+      const pendingHandoff = handoff;
+      // Core may retain or replace the history-row ID when the transformer
+      // yields on completion. In either case this is the same message, not a
+      // new row, so never replay the message entrance at the renderer swap.
+      const handoffRow = pendingHandoff ? nativeAssistantRows.find((row) => row.getAttribute('data-history-row-id') === pendingHandoff.id)
+        ?? (pendingHandoff.text ? nativeAssistantRows.find((row) => (row.textContent?.replace(/\s+/g, ' ').trim() ?? '') === pendingHandoff.text) : null)
+        ?? (rows[pendingHandoff.index]?.querySelector('[data-testid="assistant-message"]') ? rows[pendingHandoff.index] : null)
+        ?? nativeAssistantRows.filter((row) => !seen.has(row.getAttribute('data-history-row-id') ?? ''))
+          .sort((left, right) => Math.abs(rows.indexOf(left) - pendingHandoff.index) - Math.abs(rows.indexOf(right) - pendingHandoff.index))[0]
+        ?? null : null;
+      const handoffSwapCommit = Boolean(!stream && (old?.stream || handoffRow));
+      const handoffTransition = Boolean(!stream && (old?.stream || old?.handoff || handoffRow));
+      let handoffQuietUntil = handoffSwapCommit ? Date.now() + 180 : old?.handoffQuietUntil ?? 0;
+      if (handoffRow) handoff = null;
+      const enteringCompactions = new Set<Element>();
+      for (const item of all(chat, '[data-testid="stream-item"]')) {
+        if (!(item.textContent?.trim() ?? '').startsWith('Compacting')) continue;
+        const itemRow = item.closest(HISTORY_ROW);
+        const key = item.getAttribute('data-stream-item-id')
+          ?? itemRow?.getAttribute('data-history-row-id')
+          ?? '';
+        if (old && liveTurn && !suppressHydrationMotion && key && !seenCompactions.has(key)) enteringCompactions.add(item);
+        if (key) seenCompactions.add(key);
+      }
+      const enteringWorkedFooters: WorkedFooterTarget[] = [];
+      for (const workedFooter of findWorkedFooters(chat, rows)) {
+        const alreadySeen =
+          seenWorkedFooterNodes.has(workedFooter.row)
+          || seenWorkedFooterNodes.has(workedFooter.label)
+          || workedFooter.keys.some((key) => seenWorkedFooters.has(key));
+        if (shouldQueueWorkedFooterEntrance({
+          hasPreviousChatState: Boolean(old),
+          liveTurn,
+          completedFooterPending: Boolean(old && !running && Date.now() < old.completedFooterPendingUntil),
+          suppressHydrationMotion,
+          hasEnteringUserMessage,
+          isNew: !alreadySeen,
+        })) {
+          enteringWorkedFooters.push(workedFooter);
+        }
+        seenWorkedFooterNodes.add(workedFooter.row);
+        seenWorkedFooterNodes.add(workedFooter.label);
+        for (const key of workedFooter.keys) seenWorkedFooters.add(key);
+      }
       let entered = 0;
-      rows.forEach((row, index) => {
+      const pendingRowEntrances: Array<{ row: Element; isUserMessage: boolean }> = [];
+      rows.forEach((row) => {
         const id = row.getAttribute('data-history-row-id')!;
         const isNew = !seen.has(id);
+        const isUserMessage = Boolean(row.querySelector(USER_MESSAGE));
+        const suppressRowHydrationMotion = suppressHydrationMotion && id !== localAnswerRowId;
+        if (id && isNew && allow && (old || isFirstLiveUserTurn) && !suppressHydrationMotion && (running || isUserMessage)) {
+          let recent = chatImageRecentRows.get(chat);
+          if (!recent) { recent = new Map(); chatImageRecentRows.set(chat, recent); }
+          recent.set(id, Date.now() + 10000);
+          while (recent.size > 1000) recent.delete(recent.keys().next().value!);
+        }
         seen.add(id);
-        if (allow && old && isNew && lastKnown >= 0 && index > lastKnown && atBottom && Date.now() >= quietUntil) candidates.add(id);
-        if (candidates.has(id) && visible(row) && row.querySelector('[data-testid="user-message"], [data-testid="assistant-message"]')) {
+        if (row === handoffRow) candidates.delete(id);
+        else if (shouldQueueMessageEntrance({
+          hasPreviousChatState: Boolean(old) || isFirstLiveUserTurn,
+          wasRunning: Boolean(old?.running),
+          running,
+          isUserMessage,
+          suppressHydrationMotion: suppressRowHydrationMotion,
+          isNew,
+          allow,
+          atBottom,
+          quiet: Date.now() < quietUntil,
+        })) candidates.add(id);
+        if (candidates.has(id) && visible(row)) {
           candidates.delete(id);
-          if (allow && getPreferences().messages && atBottom && Date.now() >= quietUntil && entered++ < 4) animate(row, [{ opacity: 0 }, { opacity: 1 }], undefined, 0, 150);
+          const ownsTextFade = Boolean(row.querySelector('[data-testid="native-polish-streaming-assistant"]'));
+          const ownsCompactionEntry = Array.from(enteringCompactions).some((item) => item.closest(HISTORY_ROW) === row);
+          if (!suppressRowHydrationMotion && !ownsTextFade && !ownsCompactionEntry && allow && getPreferences().messages && atBottom && Date.now() >= quietUntil && entered++ < 12) {
+            pendingRowEntrances.push({ row, isUserMessage });
+          }
         }
       });
-      if (allow && getPreferences().states && old && old.running !== running && atBottom) {
-        const indicator = chat.querySelector('[data-testid="turn-working-indicator"]') ?? rows[rows.length - 1];
+      if (hasEnteringUserMessage && !handoffTransition) {
+        handoffQuietUntil = 0;
+        chatDisclosureQuietUntil.delete(chat);
+      }
+      const suppressHandoffMotion = Date.now() < handoffQuietUntil;
+      if (allow && getPreferences().messages && atBottom && Date.now() >= quietUntil) {
+        for (const item of enteringCompactions) {
+          if (!visible(item) || active.has(item)) continue;
+          const motion = messageEntranceMotion(false);
+          animate(item, motion.keyframes, undefined, 0, 260);
+        }
+      }
+      if (allow && (getPreferences().messages || getPreferences().states) && Date.now() >= quietUntil) {
+        for (const workedFooter of enteringWorkedFooters) {
+          if (!visible(workedFooter.row)) continue;
+          const rowBox = rect(workedFooter.row);
+          const rowStyle = window.getComputedStyle(workedFooter.row);
+          const marginTop = parseFloat(rowStyle.getPropertyValue('margin-top')) || 0;
+          const paddingBottom = parseFloat(rowStyle.getPropertyValue('padding-bottom')) || 0;
+          const expandLayout = shouldExpandWorkedFooterLayout({
+            hasFollowingContent: workedFooter.hasFollowingContent,
+            isTurnCompletionFooter: workedFooter.isTurnCompletionFooter,
+            suppressHandoffMotion,
+          });
+          const motion = workedFooterEntranceMotion({
+            height: rowBox.height,
+            marginTop,
+            paddingBottom,
+            expandLayout,
+          });
+          if (motion.rowStyles && motion.rowKeyframes && !active.has(workedFooter.row)) {
+            const finishWorkedFooterHeight = beginChatHeightAnimation(chat, workedFooter.row, motion.durationMs);
+            const restoreRow = temporaryStyles(workedFooter.row, motion.rowStyles);
+            animate(workedFooter.row, motion.rowKeyframes, (cancelled) => {
+              restoreRow();
+              finishWorkedFooterHeight(cancelled);
+            }, 0, motion.durationMs);
+          }
+          if (visible(workedFooter.label) && !active.has(workedFooter.label)) {
+            animate(workedFooter.label, motion.textKeyframes, undefined, 0, motion.durationMs);
+          }
+          for (const chrome of workedFooter.chrome) {
+            if (visible(chrome) && !active.has(chrome)) {
+              animate(chrome, motion.chromeKeyframes, undefined, 0, motion.durationMs);
+            }
+          }
+        }
+      }
+      const timeline = timelineFor(chat, rows);
+      const footer = footerFor(chat);
+      const timelineRise = timeline ? riseFor(timelineRises, timeline) : null;
+      const footerRise = footer ? riseFor(footerRises, footer) : null;
+      const currentClientWidth = chat.clientWidth;
+      const widthChanged = Boolean(old && Math.abs(currentClientWidth - old.clientWidth) > .5);
+      // Sidebar/pane motion continuously changes the chat's available width.
+      // The resulting line-wrap height is viewport reflow, not new output: core
+      // bottom-anchors it without starting a content rise. Keep that boundary
+      // alive through the trailing host scroll event.
+      const reflowQuietUntil = widthChanged ? Date.now() + 120 : old?.reflowQuietUntil ?? 0;
+      const suppressWidthReflowMotion = Date.now() < reflowQuietUntil;
+      const suppressDisclosureMotion =
+        Date.now() < (chatDisclosureQuietUntil.get(chat) ?? 0) ||
+        Boolean(chatHeightAnimations.get(chat)?.size);
+      const measuredFooterTop = footer && footerRise ? rect(footer).top - footerRise.getOffset() : null;
+      const hasManualDisclosureCapture = Boolean(
+        pending?.disclosure && (pending.disclosure.chat === chat || pending.disclosure.element.closest(CHAT) === chat),
+      );
+      const canRiseWithFollowOutput = shouldAllowFollowOutputRise({
+        hasPreviousChatState: Boolean(old),
+        allow,
+        atBottom,
+        messagesEnabled: getPreferences().messages,
+        quiet: Date.now() < quietUntil,
+        suppressHandoffMotion,
+        suppressHydrationMotion,
+        suppressWidthReflowMotion,
+        suppressDisclosureMotion,
+        hasEnteringUserMessage,
+        holdingPendingBottom,
+        hasActiveTimelineRise: (timelineRise?.getOffset() ?? 0) > 0.5,
+        hasManualDisclosureCapture,
+      });
+      let compensatedScrollTop = currentScrollTop;
+      let pendingBottomUntil = 0;
+      let footerTop = measuredFooterTop;
+      if (canRiseWithFollowOutput && old) {
+        // A chat mutation is observable before Paseo's follow-output frame.
+        // Pre-arm the inverse from the new scroll extent so the subsequent
+        // scrollTop snap and transform land in one paint. Waiting for `scroll`
+        // produces an upward flash followed by a downward correction.
+        // Scroll events are intentionally not required to have committed the
+        // previous snap yet; the compensated target is the authoritative
+        // follow position across back-to-back stream chunks.
+        const followScroll = resolveFollowOutputScroll({
+          wasFollowing,
+          currentScrollTop,
+          maxScrollTop,
+          previousScrollTop: old.scrollTop,
+          previousCompensatedScrollTop: previousCompensatedScrollTop ?? old.scrollTop,
+          previousMaxScrollTop: old.maxScrollTop,
+          currentScrollHeight,
+          previousScrollHeight: old.scrollHeight,
+          currentClientHeight,
+          previousClientHeight: old.clientHeight,
+        });
+        compensatedScrollTop = followScroll.compensatedScrollTop;
+        if (followScroll.anticipatesBottom) {
+          pendingBottomUntil = Date.now() + 120;
+        }
+        if (followScroll.viewportHeightChangedOnly) {
+          if (currentClientHeight < old.clientHeight - 0.5 || (timelineRise?.getOffset() ?? 0) <= 0.5) {
+            timelineRise?.cancel();
+            footerRise?.cancel();
+          }
+          footerTop = footer ? rect(footer).top : null;
+        } else {
+          if (followScroll.anticipatesBottom) timelineRise?.prepare(followScroll.scrollDistance);
+          else timelineRise?.start(followScroll.scrollDistance);
+          // Once overflow grows, the anticipated scroll absorbs the footer's
+          // layout movement. Before overflow, retain the ordinary footer rise.
+          if (measuredFooterTop !== null) footerTop = measuredFooterTop - (compensatedScrollTop - currentScrollTop);
+          if (
+            old.maxScrollTop <= 0.5 &&
+            old.footerTop !== null &&
+            footerTop !== null &&
+            old.footerTop - footerTop < -0.5 &&
+            shouldAnimateFooterRise(old.footer, footer, hasEnteringUserMessage)
+          ) {
+            footerRise?.start(old.footerTop - footerTop);
+          }
+        }
+      } else if (!allow || !atBottom || Date.now() < quietUntil || suppressHydrationMotion || suppressWidthReflowMotion) {
+        const hadUncommittedAnticipation = Boolean(
+          old &&
+            old.compensatedScrollTop > old.scrollTop + 0.5 &&
+            currentScrollTop < old.compensatedScrollTop - 0.5,
+        );
+        if (
+          !allow ||
+          !old ||
+          old.contextKey !== contextKey ||
+          !atBottom ||
+          suppressHydrationMotion ||
+          suppressWidthReflowMotion ||
+          hadUncommittedAnticipation
+        ) {
+          timelineRise?.cancel();
+          footerRise?.cancel();
+        }
+        if (suppressHydrationMotion || suppressWidthReflowMotion || !atBottom) {
+          footerTop = footer ? rect(footer).top : null;
+        }
+      } else if (old && wasFollowing) {
+        compensatedScrollTop = maxScrollTop;
+        if (maxScrollTop > currentScrollTop + 0.5) {
+          pendingBottomUntil = Math.max(
+            Date.now() + 120,
+            chatDisclosureQuietUntil.get(chat) ?? 0,
+            handoffQuietUntil,
+          );
+        }
+      }
+      const footerMovedDownPx =
+        old?.footerTop !== null && old?.footerTop !== undefined && footerTop !== null
+          ? footerTop - old.footerTop
+          : 0;
+      const footerSlideDownPx =
+        old && old.maxScrollTop <= 0.5 ? Math.max(0, footerMovedDownPx) : 0;
+      for (const { row, isUserMessage } of pendingRowEntrances) {
+        const delayMs = resolveUserMessageEntranceDelayMs({
+          isUserMessage,
+          footerSlideDownPx,
+        });
+        const question = chatQuestions.get(chat);
+        const followsQuestion = Boolean(isUserMessage && question && Date.now() < question.answerUntil);
+        if (followsQuestion && question) question.answerUntil = 0;
+        enterMessage(row, chat, isUserMessage, delayMs, followsQuestion, timelineRise, footerRise);
+      }
+      if (allow && getPreferences().states && old && old.running !== running && atBottom && !suppressHandoffMotion && !suppressHydrationMotion) {
+        // A disappearing indicator has no incoming element to animate. Do not
+        // fall through to the completed assistant row during renderer handoff.
+        const indicator = chat.querySelector('[data-testid="turn-working-indicator"]');
         if (indicator && visible(indicator) && !active.has(indicator)) animate(indicator, [{ opacity: .4 }, { opacity: 1 }], undefined, 0, 150);
       }
+      let completedFooterPendingUntil = running ? 0 : old?.completedFooterPendingUntil ?? 0;
+      if (suppressHydrationMotion || enteringWorkedFooters.length > 0) completedFooterPendingUntil = 0;
+      else if (old?.running && !running) completedFooterPendingUntil = Date.now() + 600;
+      if (allow && (getPreferences().messages || getPreferences().states) && !running && atBottom && Date.now() < completedFooterPendingUntil) {
+        const footerRow = chat.querySelector('[data-testid="turn-footer-entry-motion"]');
+        const worked = footerRow ? smallestTextElement(footerRow, 'Worked') : null;
+        if (worked && visible(worked) && !active.has(worked)) {
+          const motion = workedFooterEntranceMotion({ height: 0, expandLayout: false });
+          animate(worked, motion.textKeyframes, undefined, 0, motion.durationMs);
+          completedFooterPendingUntil = 0;
+        }
+      }
       while (seen.size > 5000) seen.delete(seen.values().next().value!);
-      const currentIds = new Set(rows.map(row => row.getAttribute('data-history-row-id')!));
+      while (seenUserMessages.size > 1000) seenUserMessages.delete(seenUserMessages.values().next().value!);
+      while (seenCompactions.size > 500) seenCompactions.delete(seenCompactions.values().next().value!);
+      while (seenWorkedFooters.size > 1000) seenWorkedFooters.delete(seenWorkedFooters.values().next().value!);
       for (const id of candidates) if (!atBottom || !currentIds.has(id)) candidates.delete(id);
-      chats.set(chat, { seen, pending: candidates, running });
+      const textSignature = chatTextSignatures.get(chat) ?? chatTextSignature(chat, rows);
+      chats.set(chat, { contextKey, rowIds: currentIds, seen, seenUserMessages, seenCompactions, seenWorkedFooters, pending: candidates, running, completedFooterPendingUntil, scrollTop: currentScrollTop, compensatedScrollTop, pendingBottomUntil, userScrolledUp, maxScrollTop, scrollHeight: currentScrollHeight, clientHeight: currentClientHeight, clientWidth: currentClientWidth, footer, footerTop, stream, handoff, handoffQuietUntil, hydrationQuietUntil, reflowQuietUntil, textSignature });
     }
+    syncChatImages(activeChats, allow);
+    syncChatPrompts(activeChats, allow);
   }
   // ChatOutlineRail mounts `[data-testid="chat-outline-rail"]` inside its
   // `panelMeasure` overlay (`position: absolute; inset: 0`) when the chat has
@@ -1647,8 +3893,8 @@ function installWebMotion(): () => void {
     if (selected.has('panes')) updatePaneLayout(allow);
     if (selected.has('agents')) updateAgentStates(allow);
     if (selected.has('files')) updateFileStates(allow);
-    if (selected.has('tools')) updateToolStates(allow);
     if (selected.has('messages')) { updateMessages(allow); seedOutlineRails(); }
+    if (selected.has('tools')) updateToolStates(allow);
     if (selected.has('workspaces') || selected.has('tabs') || selected.has('panes')) schedulePanelBaseline();
   }
   function scheduleAmbient(selected: Region[] = regions) {
@@ -1729,22 +3975,38 @@ function installWebMotion(): () => void {
     // FLIP runs once per maximize/restore commit. Reading transformed rects
     // again in our observer would otherwise restart the same animation.
     const paneChanged = pending.paneMotion && preferences.panes && animatePanes(pending.panes, currentPanes);
-    if (pending.disclosure && ((pending.disclosure.element.matches(TOOL) && preferences.timeline) || (!pending.disclosure.element.matches(TOOL) && preferences.sidebars))) animateDisclosure(pending.disclosure);
+    const disclosure = pending.disclosure;
+    const nextChildren = disclosure ? disclosureChildren(disclosure.element) : [];
+    const nextToggle = disclosure
+      ? (disclosure.isBubble ? bubbleToggleFor(disclosure.element) : disclosure.element.querySelector('[role="button"][aria-expanded]'))
+      : null;
+    const nextPreview = disclosure?.isBubble
+      ? (disclosure.preview?.isConnected && hasAncestor(disclosure.preview, [disclosure.element])
+        ? disclosure.preview
+        : (nextToggle ? nextChildren.find(child => child !== nextToggle) ?? null : null))
+      : null;
+    const nextAria = nextToggle?.getAttribute('aria-expanded');
+    const nextExpanded = disclosure?.isBubble
+      ? bubbleExpandedState(nextToggle, nextPreview)
+      : (nextAria === 'true' ? true : nextAria === 'false' ? false : null);
+    const toggleFlipped = disclosure?.expanded !== undefined && disclosure.expanded !== null && nextExpanded !== null && nextExpanded !== disclosure.expanded;
+    const disclosureChanged = Boolean(disclosure && (toggleFlipped || nextChildren.length !== disclosure.children.length || nextChildren.some((child, index) => child !== disclosure.children[index])));
+    const inTimeline = Boolean(disclosure && (disclosure.element.matches(TOOL) || disclosure.element.closest(CHAT)));
+    if (disclosure && ((inTimeline && preferences.timeline) || (!inTimeline && preferences.sidebars))) animateDisclosure(disclosure);
     // Capture the committed tree once, before applying its FLIP transforms.
     // Reuse it as the next baseline instead of cloning/measuring it again.
     const nextTree = pending.tree && treeTarget?.isConnected ? captureTree(treeTarget) : null;
     if (preferences.trees && pending.tree && nextTree) animateTree(pending.tree, nextTree);
     // Refresh after a commit so asynchronous directory loads can animate once
     // without replaying previous rows. Ignore animation-generated ghost nodes.
-    const disclosure = pending.disclosure;
-    const nextChildren = disclosure ? Array.from(disclosure.element.children) : [];
-    const disclosureChanged = disclosure && (nextChildren.length !== disclosure.children.length || nextChildren.some((child, index) => child !== disclosure.children[index]));
     pending = {
       panels: nextPanels,
       panes: pending.paneMotion ? currentPanes : pending.panes,
       paneAction: pending.paneAction,
       paneMotion: pending.paneMotion && !paneChanged,
-      disclosure: disclosureChanged ? captureDisclosure(disclosure.element) : disclosure,
+      disclosure: disclosureChanged
+        ? (disclosure?.isBubble ? null : captureDisclosure(disclosure!.element))
+        : disclosure,
       tree: nextTree ?? pending.tree,
     };
     panelBaseline = nextPanels;
@@ -1938,14 +4200,25 @@ function installWebMotion(): () => void {
     }
     return refreshOutlineRailFromMutation(target, record);
   }
+  const scheduleDisclosureMicrotask = () => {
+    if (!pending?.disclosure) return;
+    void Promise.resolve().then(() => {
+      if (pending?.disclosure && canAnimate()) {
+        if (frame) { window.cancelAnimationFrame(frame); frame = 0; }
+        flush();
+      }
+    });
+  };
   const observer = new MutationObserver(records => {
     if (disposed || suspended) return;
     let shellChanged = false;
+    let refreshChatNow = false;
     for (const record of records) {
       const target = elementOf(record.target);
       const structural = record.type === 'childList';
-      if (structural || record.type === 'characterData') syncTitleRevealFromMutation(record, target);
-      if (!target || target.closest('[data-native-polish-ghost],[data-native-polish-peek-trigger],[data-native-polish-reveal]')) continue;
+      const textual = record.type === 'characterData';
+      if (structural || textual) syncTitleRevealFromMutation(record, target);
+      if (!target || target.closest('[data-native-polish-ghost],[data-native-polish-peek-trigger],[data-native-polish-reveal],[data-native-polish-shimmer-overlay]')) continue;
       // Discover an editor's scroll surface when CodeMirror mounts into its
       // host. Token, selection and caret updates remain excluded from scans.
       if (target.closest(EDITING)) {
@@ -1954,7 +4227,7 @@ function installWebMotion(): () => void {
       }
       if (structural) {
         const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
-        if (nodes.length && nodes.every(node => node.nodeType === 1 && (node.getAttribute('data-native-polish-ghost') !== null || node.getAttribute('data-native-polish-peek-trigger') !== null))) continue;
+        if (nodes.length && nodes.every(node => node.nodeType === 1 && (node.getAttribute('data-native-polish-ghost') !== null || node.getAttribute('data-native-polish-peek-trigger') !== null || node.getAttribute('data-native-polish-shimmer-overlay') !== null))) continue;
         if (updateShortcutBadges(record, target)) continue;
         if (updateOutlineRails(record, target)) continue;
       } else if (refreshOutlineRailFromMutation(target, record)) {
@@ -1966,7 +4239,7 @@ function installWebMotion(): () => void {
       if (pending && !shellChanged && !target.closest(CHAT + ', ' + WORKSPACE_SCROLL + ', ' + FILE_TREE + ', ' + CHANGE_TREE + ', ' + TAB_ROW + ', ' + FLOATING)) shellChanged = true;
       if (record.attributeName === 'data-status-bucket') { scheduleAmbient(['agents']); continue; }
       // Reused dialog portal surfaces open by gaining role="dialog".
-      if (record.attributeName === 'role') { scheduleAmbient(['floating', 'controls']); continue; }
+      if (record.attributeName === 'role') { scheduleAmbient(['floating', 'controls', 'tools']); continue; }
       if (!pending && canAnimate() && !document.activeElement?.closest(SHORTCUT_EDITOR) && record.attributeName === 'aria-expanded' && target.matches('[data-testid="menu-button"], [data-testid="workspace-explorer-toggle"]')) {
         pending = { panels: panelBaseline, panes: new Map(), paneAction: false, paneMotion: false, disclosure: null, tree: null };
         shellChanged = true;
@@ -1975,9 +4248,14 @@ function installWebMotion(): () => void {
         deadline = window.setTimeout(clearCapture, 900);
       }
       if (structural || record.attributeName === 'aria-expanded' || target.matches(PANE) || target.querySelector(PANE)) schedule();
-      const meaningful = structural || record.type === 'characterData' || ['aria-expanded', 'aria-selected', 'aria-busy'].includes(record.attributeName ?? '');
-      if (target.closest(CHAT)) {
-        if (meaningful) scheduleAmbient(['tools', 'messages']);
+      const meaningful = structural || record.type === 'characterData' || ['aria-expanded', 'aria-selected', 'aria-busy', 'aria-hidden', 'src', 'srcset'].includes(record.attributeName ?? '');
+      const chatVisibilityChanged =
+        (record.attributeName === 'style' || record.attributeName === 'class' || record.attributeName === 'aria-hidden') &&
+        Boolean(target.matches(CHAT) || target.querySelector(CHAT));
+      if (target.closest(CHAT) || ((structural || chatVisibilityChanged) && target.querySelector(CHAT)) || chatVisibilityChanged) {
+        if (meaningful || textual || chatVisibilityChanged) {
+          refreshChatNow = true;
+        }
       } else if (target.closest(WORKSPACE_SCROLL)) {
         if (meaningful) {
           scheduleAmbient(['workspaces', 'agents', 'controls']);
@@ -1985,9 +4263,9 @@ function installWebMotion(): () => void {
       } else if (target.closest(FILE_TREE + ', ' + CHANGE_TREE)) {
         if (meaningful) scheduleAmbient(['files', 'controls']);
       } else if (target.closest(TAB_ROW)) {
-        if (meaningful || target.matches(TAB)) scheduleAmbient(['tabs', 'agents', 'controls']);
+        if (meaningful || target.matches(TAB)) scheduleAmbient(['tabs', 'agents', 'controls', 'tools', 'messages']);
       } else if (target.closest(FLOATING)) {
-        if (meaningful || target.matches(FLOATING)) scheduleAmbient(['floating', 'controls']);
+        if (meaningful || target.matches(FLOATING)) scheduleAmbient(['floating', 'controls', 'tools']);
       } else if (structural || target.matches(PANE) || target.querySelector(PANE)) {
         // Shell commits may mount/remove any surface, including portal menus.
         scheduleAmbient();
@@ -2010,8 +4288,18 @@ function installWebMotion(): () => void {
         flush();
       }
     }
+    if (refreshChatNow) {
+      if (pending?.disclosure && canAnimate()) {
+        if (frame) { window.cancelAnimationFrame(frame); frame = 0; }
+        flush();
+      }
+      // Follow-output is scheduled from the same chat commit. Measure its
+      // new extent once in this microtask so the inverse is ready before the
+      // host's animation frame writes scrollTop.
+      refreshAmbient(canAnimate(), new Set<Region>(['tools', 'messages']));
+    }
   });
-  observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['style', 'class', 'role', 'aria-hidden', 'aria-expanded', 'aria-selected', 'aria-busy', 'data-status-bucket'] });
+  observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['style', 'class', 'role', 'aria-hidden', 'aria-expanded', 'aria-selected', 'aria-busy', 'data-status-bucket', 'src', 'srcset'] });
   function clearCapture() {
     pending = null; treeTarget = null; pointerOrigin = null; layoutPolling = 0;
     window.clearTimeout(deadline); deadline = 0;
@@ -2028,6 +4316,8 @@ function installWebMotion(): () => void {
     // Preserve global sidebar shortcuts in the composer, but never treat
     // editor/terminal shortcuts or ordinary text input as chrome activation.
     if (target.closest(EDITING) && (!shortcut || target.closest(SHORTCUT_EDITOR))) return false;
+    if (!shortcut && target.closest('[data-testid="message-input-root"]')) return false;
+    if (target.closest(CHAT) && !shortcut) return Boolean(disclosureFor(target));
     return shortcut || Boolean(target.closest(ACTION));
   }
   // Newer host shortcuts stopImmediatePropagation before our B/E listener.
@@ -2047,17 +4337,43 @@ function installWebMotion(): () => void {
     window.clearTimeout(deadline);
     deadline = window.setTimeout(clearCapture, 900);
   };
+  function noteQuestionSubmission(event: Event) {
+    if (!canAnimate() || composing || event.isComposing || event.keyCode === 229 || event.repeat || (event.button ?? 0) !== 0) return;
+    if (event.key && event.key !== 'Enter' && event.key !== ' ') return;
+    const target = elementOf(event.target);
+    const card = target?.closest('[data-testid="question-form-card"]');
+    if (!target || !card || (!target.closest('[data-testid="question-form-primary-action"]') &&
+        !(event.key === 'Enter' && target.closest('input,textarea,[role="textbox"]')))) return;
+    const chat = card.closest(CHAT);
+    if (!chat) return;
+    const contextKey = chatContextKey(chat);
+    const previous = chatQuestions.get(chat);
+    chatQuestions.set(chat, {
+      contextKey, present: true, resolutionUntil: previous?.contextKey === contextKey ? previous.resolutionUntil : 0,
+      answerUntil: 0, submitUntil: Date.now() + 15000, localAnswerRowId: null,
+    });
+  }
   const begin = (event: Event) => {
+    noteQuestionSubmission(event);
     if (event.key === 'Meta' || event.key === 'Control') { prime(event); return; }
     if (!capturesInput(event)) {
       // Selecting text or placing a caret may interrupt motion, but does not
       // require full snapshots. Ordinary keystrokes leave host input alone.
-      if (!event.key) { clearCapture(); if (active.size || ghosts.size) stopAll(); }
+      const target = elementOf(event.target);
+      if (!event.key && !target?.closest(`${EDITING}, [data-testid="message-input-root"]`)) { clearCapture(); if (active.size || ghosts.size) stopAll(); }
       return;
     }
     const target = elementOf(event.target);
     if (target?.closest('[data-native-polish-ghost]')) return;
-    if (target && (disclosureFor(target)?.closest(WORKSPACE_SCROLL) || target.closest(
+    const disclosure = target ? disclosureFor(target) : null;
+    const disclosureChat = disclosure?.closest(CHAT);
+    if (disclosureChat) {
+      // The nested region owns this vertical change. Browser scroll clamping
+      // on collapse and host bottom-follow on expansion must rebase directly,
+      // rather than being replayed as motion on the entire chat timeline.
+      chatDisclosureQuietUntil.set(disclosureChat, Date.now() + duration() + 100);
+    }
+    if (target && (disclosure?.closest(WORKSPACE_SCROLL) || target.closest(
       '[data-testid*="sidebar-"][data-testid*="show-more"], [data-testid^="sidebar-host-filter-"], [data-testid^="sidebar-label-filter-"], [data-testid^="sidebar-grouping-"]'
     ))) workspaceQuietUntil = Date.now() + 900;
     // A toggle press precedes the host commit. Keep its drawer moving until
@@ -2079,12 +4395,25 @@ function installWebMotion(): () => void {
     if (baseline) pending.panels = baseline;
     window.clearTimeout(deadline);
     deadline = window.setTimeout(clearCapture, 900);
+    if (event.key) scheduleDisclosureMicrotask();
     schedule();
   };
-  const onScroll: Listener = () => {
+  const onScroll: Listener = event => {
     if (disposed || suspended) return;
+    const inChat = Boolean(elementOf(event.target)?.closest(CHAT));
     quietUntil = Date.now() + 350; pending = null; treeTarget = null;
-    if (active.size || ghosts.size) stopAll();
+    if (!inChat) {
+      if (active.size || ghosts.size) stopAll();
+    } else if (ghosts.size > toolDetailReveals.size) {
+      const revealRoots = new Set(Array.from(toolDetailReveals, reveal => reveal.root));
+      for (const ghostEl of Array.from(ghosts)) {
+        if (!revealRoots.has(ghostEl)) {
+          active.get(ghostEl)?.();
+          ghostEl.remove();
+          ghosts.delete(ghostEl);
+        }
+      }
+    }
     window.clearTimeout(scrollDeadline);
     // Rebase once after a burst, never clone workspace/project snapshots on
     // every wheel event.
@@ -2092,6 +4421,21 @@ function installWebMotion(): () => void {
       scrollDeadline = 0;
       if (!disposed) refreshAmbient(false, new Set<Region>(['workspaces', 'tabs', 'messages']));
     }, 160);
+  };
+  const onChatScroll: Listener = event => {
+    const chat = elementOf(event.target);
+    if (!chat?.matches(CHAT)) return;
+    // Core applies follow-output scrollTop after its content commit. Observe
+    // that movement directly and invert it in the same task. Deferring this
+    // to another animation frame briefly paints the snapped scroll position,
+    // then moves the text back, which reads as ghosting once streaming fades
+    // and follow-output overlap.
+    updateMessages(canAnimate());
+    if (toolDetailReveals.size > 0) {
+      for (const reveal of Array.from(toolDetailReveals)) {
+        if (!syncToolDetailReveal(reveal)) active.get(reveal.tintLayer)?.();
+      }
+    }
   };
   const onPointerMove: Listener = event => {
     if (suspended && !document.hidden && document.hasFocus()) resumeMotion();
@@ -2110,6 +4454,7 @@ function installWebMotion(): () => void {
   // click arrives. Measuring in click capture sees the final layout already.
   // Pointerdown establishes the old layout; click is only an AX fallback.
   const onCommit: Listener = (event) => {
+    noteQuestionSubmission(event);
     pointerOrigin = null;
     if (!capturesInput(event)) return;
     if (Date.now() < quietUntil) { refreshAmbient(false); return; }
@@ -2118,6 +4463,7 @@ function installWebMotion(): () => void {
     // short bounded interval as well as observing class/style/child changes.
     // This also covers CSS stylesheet updates, which are not DOM mutations.
     layoutPolling = 12;
+    scheduleDisclosureMicrotask();
     schedule(); scheduleAmbient();
   };
   const onCompositionStart: Listener = () => { composing = true; clearCapture(); if (active.size || ghosts.size) stopAll(); };
@@ -2131,18 +4477,28 @@ function installWebMotion(): () => void {
     stopAll(); stopOutlineRails(); shortcutBadges.clear(); outlineRails.clear(); elastic.reset(); elastic.refresh(); updateMotionFlags();
     window.cancelAnimationFrame(diffFrame); diffFrame = 0; diffTail = false;
     window.cancelAnimationFrame(titleFrame); titleFrame = 0; titleLastTime = 0;
+    window.cancelAnimationFrame(revealFrame); revealFrame = 0;
+    clearImagePlaceholders();
     // Exit copies are unnecessary while no motion is presented. Release
     // their detached DOM and rebuild clean baselines on return.
     workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); paneTransition = null;
-    fileIcons.clear(); toolIcons.clear(); toolStates.clear(); agentStates.clear();
+    for (const rise of contentRises) rise.cancel();
+    for (const [chatEl, timer] of hydrationTimers) {
+      window.clearTimeout(timer);
+      chatEl.removeAttribute('data-native-polish-hydrating');
+    }
+    hydrationTimers.clear();
+    visibleChats.clear();
+    fileIcons.clear(); toolIcons.clear(); toolShimmers.clear(); toolLabels.clear(); toolGroupItems.clear(); toolDetailText.clear(); toolDetailReveals.clear(); agentStates.clear();
     workspaceMeta.clear(); workspaceTitleBaseline.clear(); removeTitleCovers(); titleReveals.clear(); titleRevealKeys.clear();
   }
   function resumeMotion() {
     if (disposed || document.hidden || !document.hasFocus()) return;
     suspended = false; updateMotionFlags();
-    // Rebase once after host focus handling. Changes received in background
-    // appear immediately; they do not replay stale entrances or exits.
+    // Rebase synchronously and once more after host focus handling so changes
+    // received in background appear immediately and never replay stale motion.
     window.cancelAnimationFrame(passiveFrame); dirty.clear();
+    refreshAmbient(false);
     passiveFrame = window.requestAnimationFrame(() => { passiveFrame = 0; dirty.clear(); refreshAmbient(false); });
   }
   const onVisibility: Listener = () => { if (document.hidden) pauseMotion(); else resumeMotion(); };
@@ -2188,6 +4544,7 @@ function installWebMotion(): () => void {
   window.addEventListener('keydown', begin, true);
   window.addEventListener('keyup', unprime, true);
   document.addEventListener('wheel', onScroll, true);
+  document.addEventListener('scroll', onChatScroll, true);
   document.addEventListener('compositionstart', onCompositionStart, true);
   document.addEventListener('compositionend', onCompositionEnd, true);
   document.addEventListener('visibilitychange', onVisibility);
@@ -2200,10 +4557,12 @@ function installWebMotion(): () => void {
     edgePeek?.dispose();
     elastic.dispose();
     document.body.removeAttribute("data-native-polish");
-    for (const key of ['controls', 'tabs', 'trees', 'states', 'motion']) document.body.removeAttribute(`data-native-polish-${key}`);
+    for (const key of ['controls', 'tabs', 'trees', 'states', 'timeline', 'motion']) document.body.removeAttribute(`data-native-polish-${key}`);
     stylesheet.remove();
+    clearImagePlaceholders();
     for (const cleanup of decorations.values()) cleanup();
     decorations.clear();
+    clearLegacyPrecondense();
     observer.disconnect(); unsubscribe();
     document.removeEventListener('pointerdown', begin, true);
     document.removeEventListener('pointerup', onCommit, true);
@@ -2212,6 +4571,7 @@ function installWebMotion(): () => void {
     window.removeEventListener('keydown', begin, true);
     window.removeEventListener('keyup', unprime, true);
     document.removeEventListener('wheel', onScroll, true);
+    document.removeEventListener('scroll', onChatScroll, true);
     document.removeEventListener('compositionstart', onCompositionStart, true);
     document.removeEventListener('compositionend', onCompositionEnd, true);
     document.removeEventListener('visibilitychange', onVisibility);
@@ -2224,8 +4584,17 @@ function installWebMotion(): () => void {
     window.cancelAnimationFrame(panelBaselineFrame); panelBaselineFrame = 0; panelBaseline.clear();
     window.cancelAnimationFrame(diffFrame); diffFrame = 0; diffTail = false;
     window.cancelAnimationFrame(titleFrame); titleFrame = 0;
+    window.cancelAnimationFrame(revealFrame); revealFrame = 0;
     window.clearTimeout(scrollDeadline); dirty.clear();
-    workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); fileIcons.clear(); toolIcons.clear(); toolStates.clear(); agentStates.clear();
+    for (const rise of contentRises) rise.cancel();
+    contentRises.clear();
+    for (const [chatEl, timer] of hydrationTimers) {
+      window.clearTimeout(timer);
+      chatEl.removeAttribute('data-native-polish-hydrating');
+    }
+    hydrationTimers.clear();
+    visibleChats.clear();
+    workspaceLists.clear(); tabRows.clear(); floating.clear(); paneBaseline.clear(); fileIcons.clear(); toolIcons.clear(); toolShimmers.clear(); toolLabels.clear(); toolGroupItems.clear(); toolDetailText.clear(); toolDetailReveals.clear(); agentStates.clear();
     workspaceMeta.clear(); workspaceTitleBaseline.clear(); removeTitleCovers(); titleReveals.clear(); titleRevealKeys.clear(); shortcutBadges.clear(); outlineRails.clear();
     pending = null; treeTarget = null; stopAll(); stopOutlineRails();
   };

@@ -1,7 +1,10 @@
 {
   "name": "paseo-native-polish",
   "private": true,
-  "version": "0.4.23",
+  "version": "0.4.24",
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "files": [
     "paseo-plugin.json",
     "OVERVIEW.md",
@@ -11,6 +14,8 @@
     "NOTICE"
   ],
   "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:chat-disclosure-motion": "node --experimental-strip-types tests/chat-disclosure-motion.test.mjs",
     "test:motion-runtime": "node --experimental-strip-types tests/motion-runtime.test.mjs",
     "test:outline-rail-motion": "node --experimental-strip-types tests/outline-rail-motion.test.mjs",
     "test:sidebar-cascade": "node --experimental-strip-types tests/sidebar-cascade.test.mjs",
@@ -21,7 +26,7 @@
     "test:sidebar-browser": "node tests/sidebar-browser.test.mjs"
   },
   "devDependencies": {
-    "@getpaseo/plugin": "0.11.2",
+    "@getpaseo/plugin": "0.13.0",
     "@tanstack/react-query": "^5.90.11",
     "@types/react": "~19.2.0",
     "playwright": "^1.61.1",

@@ -12,9 +12,9 @@ Motion for Paseo's existing interface. Sidebars, panes, tabs and disclosures tra
 | Edge preview | Hover at a hidden desktop sidebar’s window edge for a temporary, interactive overlay. Leaving restores the closed state without resizing the canvas. |
 | Panes | Animate split, close, maximize and restore. |
 | Tabs | Animate opening, closing and reordering; transition selection colors. |
-| Explorer and timeline | Animate tree expansion/collapse, folder arrows, tool calls, thinking details and the chat prompt outline rail sliding in from the left and sliding out when the chat narrows. |
+| Explorer and timeline | Animate tree expansion/collapse, folder arrows, tool call disclosures in both direct and wrapped headers, newly arriving tool summaries and their 320 ms upward text transitions, thinking details and the chat prompt outline rail sliding in from the left and sliding out when the chat narrows. |
 | Overlays and controls | Short menu/dialog transitions, button press feedback and hover changes. Tooltips keep Paseo's own motion and hover lifecycle. |
-| Agent activity | Transition status changes and fade newly appended messages once near the conversation tail. |
+| Agent activity | Reveal coalesced streamed Markdown arrivals with core's opacity fade, plus core-style snap-to-line growth. New chat images ease in; pending images show a skeleton unless Paseo already supplies a spinner. Reveal tool labels and summaries at their natural text width as details arrive. Ease approval prompts and AskQuestion cards into view; submitted answers enter like regular messages after the question-removal layout motion settles, including answers submitted while a reopened conversation is still restoring history. Transition status changes and newly appended messages. |
 | Scrolling | Damped edge rebound for agent conversations, workspace lists, Files, Changes, Markdown previews and editable/read-only file Source views. Normal scrolling and inertia stay with Paseo. |
 
 Workspace rows also move smoothly when pinned, unpinned or moved between status groups. When a workspace name changes outside the inline rename editor, the new sidebar title reveals letter by letter. Inline edits show the saved name immediately. Project creation/removal animates the group and surrounding list, and projects added or removed through sidebar filters animate the same way. These transitions use the sidebar motion setting.
@@ -33,11 +33,11 @@ File scrolling covers rendered Markdown and editable/read-only Source views for 
 
 The desktop fallback is an approximation: Paseo's Electron window does not currently enable `scrollBounce`, and a client plugin cannot change that main-process option. Exact macOS rebound requires host support.
 
-Streaming updates are coalesced by surface; wheel bursts rebase list snapshots after input settles. Text editing, selection and IME composition bypass global motion captures. Editor/terminal rendering does not trigger app layout scans. Motion and scans pause when the window loses focus or becomes hidden; returning rebases the current UI without replaying background changes. Tree commits reuse one bounded layout capture.
+Streaming assistant rows render with Paseo's host `Markdown` component while live and reveal each coalesced text arrival by fading inert background covers over the newly appended glyph ranges, keeping Paseo as the sole Markdown paint owner. New assistant and Thinking text fades in over 400 ms on Gentle or 200 ms on Quick. Inline paths ending in a backslash appear as soon as their closing backticks arrive. Literal brackets and intervals stay readable while incomplete link destinations and file references wait for the rest of their syntax. New messages controls assistant text motion, and Tool calls and thinking controls tool text motion. Paseo renders the live assistant row when Enable motion or New messages is off. Tool details resize from their current height as new text arrives and keep Thinking text clipped during the transition. Closing a tool group keeps the outgoing details aligned with the group as the chat scrolls. Long user messages remain readable until Paseo provides its own expansion control. Completed rows return to Paseo's default timeline item; the adapter suppresses a second message entrance at that handoff. Streaming updates are coalesced by surface; sending a message keeps follow-output scrolling within the chat’s content, and scrolling upward stops follow-output motion. Wheel bursts rebase list snapshots after input settles. Text editing, selection and IME composition bypass global motion captures. Editor/terminal rendering does not trigger app layout scans. Motion and scans pause when the window loses focus or becomes hidden; returning rebases the current UI without replaying background changes. Tree commits reuse one bounded layout capture.
 
 ## Install
 
-Requires **Paseo 0.11.2** or later, with plugins enabled on the target daemon. The DOM adapter was developed against 0.11.2 and supports the retained left sidebar dock in 0.16.0-beta.2.
+Requires **Paseo 0.13.0** or later, with plugins enabled on the target daemon. The DOM adapter was developed against 0.11.2 and supports the retained left sidebar dock in 0.16.0-beta.2.
 
 ```sh
 paseo plugin add git:JasprW/paseo-native-polish
@@ -61,7 +61,7 @@ Settings are stored in the current client's local storage. Disable or unload the
 
 ## Development
 
-Use Node.js 22. Paseo compiles the TypeScript entries; no separate build is needed.
+Use Node.js 22.6.0 or later. Paseo compiles the TypeScript entries; no separate build is needed.
 
 ```sh
 git clone https://github.com/JasprW/paseo-native-polish.git
@@ -77,6 +77,7 @@ paseo plugin reload paseo-native-polish
 index.client.tsx       Client registration and lifecycle
 client/settings.tsx   Settings UI using Paseo components
 client/preferences.ts Reactive preferences
+client/streaming-markdown.tsx Live streaming assistant item using Paseo's Markdown component
 client/web.ts         Web-only DOM and animation adapter
 client/elastic-scroll.ts Web scroll boundary spring and cleanup
 client/edge-peek.ts    Temporary desktop edge preview and restoration
