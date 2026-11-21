@@ -2,6 +2,7 @@
 
 ## 0.4.23 · 2026-11-19
 
+- Show inline code ending in a backslash as soon as it closes so the following text stays visible during streaming.
 - Restore the sidebar title reveal for workspace names that change outside the inline rename editor, such as when the displayed branch name changes. Saving an inline rename shows the new title immediately.
 
 ## 0.4.22 · 2026-11-17

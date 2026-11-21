@@ -334,6 +334,18 @@ test("literal brackets and intervals remain readable throughout a stream", () =>
   }
 });
 
+test("a trailing backslash in inline code preserves the following streamed text", () => {
+  const prefix = "The drive is ";
+  for (const delimiter of ["`", "``"]) {
+    const open = prefix + delimiter + "C:\\";
+    const closed = open + delimiter;
+    assert.equal(finalizeStreamingMarkdown(open), prefix);
+    assert.equal(finalizeStreamingMarkdown(closed), closed);
+    const continued = closed + " and the build succeeded.";
+    assert.equal(finalizeStreamingMarkdown(continued), continued);
+  }
+});
+
 test("fragmented links keep the readable prefix and wait for a complete destination", () => {
   const prefix = "Use [0, 1) for all values. ";
   const fragments = ["[guide", "[guide]", "[guide](", "[guide](https://example.test/guide", "[guide](https://example.test/guide)"];

@@ -218,10 +218,6 @@ function findUnfinalizedInlineCodeStart(source: string, scanStart: number): numb
       let search = runEnd;
       let closed = false;
       while (search < source.length) {
-        if (source[search] === "\\") {
-          search += 2;
-          continue;
-        }
         if (source[search] === "`") {
           let closeEnd = search + 1;
           while (closeEnd < source.length && source[closeEnd] === "`") closeEnd += 1;
