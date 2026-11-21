@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.24 · 2026-11-21
+## 0.5.0 · 2026-11-21
 
 - Show inline code ending in a backslash as soon as it closes so the following text stays visible during streaming.
 - Require Paseo 0.13.0 or later for the plugin API that powers the live assistant renderer.
