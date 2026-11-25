@@ -828,8 +828,11 @@ function installWebMotion(): () => void {
       // when it closes. Animate the real element for the duration of the exit:
       // a copy would lose canvas pixels (diff, terminal) and clone webviews.
       panelExits.add(el);
-      const restore = temporaryStyles(el, { display: 'flex', overflow: 'hidden', 'min-width': '0', 'box-sizing': 'border-box', 'pointer-events': 'none', 'flex-shrink': '0' });
-      el.style.setProperty('display', 'flex', 'important');
+      // Paseo 0.17 hides the dock with a Unistyles class, so the override must
+      // be !important, and restored with that same priority or it stays open.
+      const restoreDisplay = temporaryStyles(el, { display: 'flex' }, 'important');
+      const restoreLayout = temporaryStyles(el, { overflow: 'hidden', 'min-width': '0', 'box-sizing': 'border-box', 'pointer-events': 'none', 'flex-shrink': '0' });
+      const restore = () => { restoreLayout(); restoreDisplay(); };
       const content = panelContent(el);
       const restoreContent = content ? temporaryStyles(content, { 'min-width': `${before.box.width}px` }) : () => {};
       startDiffSync();
