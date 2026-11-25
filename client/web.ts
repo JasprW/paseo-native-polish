@@ -576,7 +576,7 @@ function captureTree(target: Element): Tree | null {
 }
 
 // Keep in step with package.json. leaseMotion uses it to pick which bundle owns the window.
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 
 export function installMotion(): () => void {
   if (Platform.OS !== 'web' || typeof document === 'undefined' || typeof window === 'undefined' || typeof MutationObserver === 'undefined') return () => {};

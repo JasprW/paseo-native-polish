@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1 · 2026-11-25
+
+- Let the Explorer sidebar close again on Paseo 0.17. The close animation left the sidebar forced visible, so it stayed open after its button or shortcut was used.
+
 ## 0.5.0 · 2026-11-21
 
 - Show inline code ending in a backslash as soon as it closes so the following text stays visible during streaming.
